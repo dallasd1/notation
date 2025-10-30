@@ -26,11 +26,15 @@ import (
 
 const (
 	// Supported envelope format.
-	COSE = "cose"
-	JWS  = "jws"
+	COSE  = "cose"
+	JWS   = "jws"
+	PKCS7 = "pkcs7"
 
 	// MediaTypePayloadV1 is the supported content type for signature's payload.
 	MediaTypePayloadV1 = "application/vnd.cncf.notary.payload.v1+json"
+
+	// MediaTypePKCS7Signature is the media type for PKCS#7 signature format
+	MediaTypePKCS7Signature = "application/pkcs7-signature"
 )
 
 // Payload describes the content that gets signed.
@@ -45,8 +49,10 @@ func GetEnvelopeMediaType(sigFormat string) (string, error) {
 		return jws.MediaTypeEnvelope, nil
 	case COSE:
 		return cose.MediaTypeEnvelope, nil
+	case PKCS7:
+		return MediaTypePKCS7Signature, nil
 	}
-	return "", fmt.Errorf("signature format %q not supported\nSupported signature envelope formats are \"jws\" and \"cose\"", sigFormat)
+	return "", fmt.Errorf("signature format %q not supported\nSupported signature envelope formats are \"jws\", \"cose\", and \"pkcs7\"", sigFormat)
 }
 
 // ValidatePayloadContentType validates signature payload's content type.

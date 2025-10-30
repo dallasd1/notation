@@ -42,6 +42,12 @@ func TestGetEnvelopeMediaType(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "pkcs7",
+			args:    args{"pkcs7"},
+			want:    "application/pkcs7-signature",
+			wantErr: false,
+		},
+		{
 			name:    "unsupported",
 			args:    args{"unsupported"},
 			want:    "",

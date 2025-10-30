@@ -55,6 +55,7 @@ type signOpts struct {
 	inputType              inputType
 	tsaServerURL           string
 	tsaRootCertificatePath string
+	dmVerity               bool
 }
 
 func signCommand(opts *signOpts) *cobra.Command {
@@ -90,6 +91,9 @@ Example - Sign an OCI artifact and store signature using the Referrers API. If i
 
 Example - Sign an OCI artifact with timestamping:
   notation sign --timestamp-url <TSA_url> --timestamp-root-cert <TSA_root_certificate_filepath> <registry>/<repository>@<digest> 
+
+Example - Sign an OCI artifact with dm-verity per-layer signatures:
+  notation sign --dm-verity --signature-format pkcs7 --id <key_id> <registry>/<repository>@<digest>
 `
 	experimentalExamples := `
 Example - [Experimental] Sign an OCI artifact referenced in an OCI layout
@@ -97,6 +101,9 @@ Example - [Experimental] Sign an OCI artifact referenced in an OCI layout
 
 Example - [Experimental] Sign an OCI artifact identified by a tag and referenced in an OCI layout
   notation sign --oci-layout "<oci_layout_path>:<tag>"
+
+Example - [Experimental] Sign an OCI artifact with dm-verity per-layer signatures
+  notation sign --dm-verity --signature-format pkcs7 --id <key_id> <registry>/<repository>@<digest>
 `
 
 	command := &cobra.Command{
@@ -127,6 +134,13 @@ Example - [Experimental] Sign an OCI artifact identified by a tag and referenced
 				}
 			}
 
+			// dm-verity validation
+			if opts.dmVerity {
+				if opts.SignerFlagOpts.SignatureFormat != "pkcs7" {
+					return errors.New("dm-verity signing requires --signature-format pkcs7")
+				}
+			}
+
 			return runSign(cmd, opts)
 		},
 	}
@@ -140,9 +154,10 @@ Example - [Experimental] Sign an OCI artifact identified by a tag and referenced
 	command.Flags().StringVar(&opts.tsaRootCertificatePath, "timestamp-root-cert", "", "filepath of timestamp authority root certificate")
 	flag.SetPflagReferrersTag(command.Flags(), &opts.forceReferrersTag, "force to store signatures using the referrers tag schema")
 	command.Flags().BoolVar(&opts.ociLayout, "oci-layout", false, "[Experimental] sign the artifact stored as OCI image layout")
+	command.Flags().BoolVar(&opts.dmVerity, "dm-verity", false, "[Experimental] sign each layer with dm-verity root hash using PKCS#7 format")
 	command.MarkFlagsMutuallyExclusive("oci-layout", "force-referrers-tag")
 	command.MarkFlagsRequiredTogether("timestamp-url", "timestamp-root-cert")
-	experimental.HideFlags(command, experimentalExamples, []string{"oci-layout"})
+	experimental.HideFlags(command, experimentalExamples, []string{"oci-layout", "dm-verity"})
 	return command
 }
 
@@ -172,7 +187,13 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 	signOpts.ArtifactReference = manifestDesc.Digest.String()
 
 	// core process
-	artifactManifestDesc, sigManifestDesc, err := notation.SignOCI(ctx, signer, sigRepo, signOpts)
+	var artifactManifestDesc, sigManifestDesc ocispec.Descriptor
+	if cmdOpts.dmVerity {
+		// TODO: Implement dm-verity signing logic
+		return fmt.Errorf("dm-verity signing is not yet implemented")
+	} else {
+		artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
+	}
 	if err != nil {
 		var referrerError *remote.ReferrersError
 		if !errors.As(err, &referrerError) || !referrerError.IsReferrersIndexDelete() {

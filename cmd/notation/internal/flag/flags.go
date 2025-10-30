@@ -36,7 +36,7 @@ var (
 
 	PflagSignatureFormat = &pflag.Flag{
 		Name:  "signature-format",
-		Usage: "signature envelope format, options: \"jws\", \"cose\"",
+		Usage: "signature envelope format, options: \"jws\", \"cose\", \"pkcs7\"",
 	}
 	SetPflagSignatureFormat = func(fs *pflag.FlagSet, p *string) {
 		config, err := config.LoadConfigOnce()
