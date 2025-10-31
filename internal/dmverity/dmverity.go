@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/notaryproject/notation-go"
+	"github.com/notaryproject/notation/v2/internal/erofs"
 	"github.com/notaryproject/notation/v2/internal/registryutil"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -91,23 +92,35 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 	return signatures, nil
 }
 
-// generateDmVerityRootHash generates the dm-verity root hash for a layer
-// This is a placeholder - in practice this would:
-// 1. Decompress the layer (if it's a tar.gz)
-// 2. Generate EROFS metadata
-// 3. Compute the dm-verity Merkle tree
-// 4. Return the root hash
+// generateDmVerityRootHash generates the dm-verity root hash for a layer.
+// Uses modular utilities from internal/erofs package:
+// 1. EROFS Converter: tar.gz -> EROFS filesystem
+// 2. Veritysetup Calculator: EROFS -> dm-verity root hash
+//
+// This follows the pattern established by registryutil.BlobFetcher for modularity.
 func generateDmVerityRootHash(layerData []byte) (string, error) {
 	fmt.Printf("[dmverity.generateDmVerityRootHash] Processing %d bytes of layer data\n", len(layerData))
+	ctx := context.Background()
 
-	// TODO: Implement actual EROFS + dm-verity processing
-	// For now, return a mock root hash
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 1: Decompressing layer (TODO: implement)\n")
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 2: Generating EROFS metadata (TODO: implement)\n")
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 3: Computing dm-verity Merkle tree (TODO: implement)\n")
+	// Step 1: Convert tar.gz layer to EROFS format using modular converter
+	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 1: Converting tar.gz to EROFS...\n")
+	converter := erofs.NewConverter("")
+	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerData)
+	if err != nil {
+		return "", fmt.Errorf("EROFS conversion failed: %w", err)
+	}
+	fmt.Printf("[dmverity.generateDmVerityRootHash] → Created EROFS image: %d bytes\n", len(erofsData))
 
-	rootHash := fmt.Sprintf("mock_root_hash_%d", len(layerData))
-	fmt.Printf("[dmverity.generateDmVerityRootHash] Generated mock root hash: %s\n", rootHash)
+	// Step 2: Calculate dm-verity root hash using modular veritysetup utilities
+	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 2: Computing dm-verity Merkle tree root hash...\n")
+	calculator := erofs.NewVerityCalculator("")
+	opts := erofs.DefaultVeritysetupOptions()
+	rootHash, err := calculator.CalculateRootHash(ctx, erofsData, &opts)
+	if err != nil {
+		return "", fmt.Errorf("dm-verity root hash calculation failed: %w", err)
+	}
+
+	fmt.Printf("[dmverity.generateDmVerityRootHash] ✓ Generated dm-verity root hash: %s\n", rootHash)
 	return rootHash, nil
 }
 
