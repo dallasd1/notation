@@ -16,13 +16,20 @@ package dmverity
 
 import (
 	"context"
+	"crypto"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
+	"os"
 
 	"github.com/notaryproject/notation-go"
 	"github.com/notaryproject/notation/v2/internal/erofs"
 	"github.com/notaryproject/notation/v2/internal/registryutil"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"go.mozilla.org/pkcs7"
 )
 
 // LayerSignature represents a dm-verity signature for a single layer
@@ -125,18 +132,83 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 }
 
 // signRootHashPKCS7 signs a dm-verity root hash using PKCS#7 format
+// PROTOTYPE: Direct PKCS#7 signing bypassing notation-go (which doesn't support PKCS#7 yet)
 func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash string) ([]byte, error) {
 	fmt.Printf("[dmverity.signRootHashPKCS7] Signing root hash: %s\n", rootHash)
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Using signer type: %T\n", signer)
+	fmt.Printf("[dmverity.signRootHashPKCS7] → Using PROTOTYPE direct PKCS#7 signing\n")
 
-	// TODO: Implement PKCS#7 signing of the root hash
-	// For now, return mock signature data
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Creating PKCS#7 signature structure (TODO: implement)\n")
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Applying cryptographic signature (TODO: implement)\n")
+	// Convert hex root hash to bytes for signing
+	rootHashBytes, err := hex.DecodeString(rootHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode root hash from hex: %w", err)
+	}
 
-	mockSignature := fmt.Sprintf("pkcs7_signature_of_%s", rootHash)
-	fmt.Printf("[dmverity.signRootHashPKCS7] Generated mock signature: %d bytes\n", len(mockSignature))
-	return []byte(mockSignature), nil
+	// PROTOTYPE: Load signing key and certificate directly from filesystem
+	// TODO: Integrate properly with notation's signer interface
+	keyPath := os.Getenv("HOME") + "/.config/notation/localkeys/dmverity-test.key"
+	certPath := os.Getenv("HOME") + "/.config/notation/localkeys/dmverity-test.crt"
+
+	// Load private key
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key: %w", err)
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("failed to decode PEM block containing private key")
+	}
+
+	var privateKey crypto.PrivateKey
+	switch keyBlock.Type {
+	case "RSA PRIVATE KEY":
+		privateKey, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	case "PRIVATE KEY":
+		privateKey, err = x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", keyBlock.Type)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key: %w", err)
+	}
+
+	// Load certificate
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read certificate: %w", err)
+	}
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, fmt.Errorf("failed to decode PEM block containing certificate")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	fmt.Printf("[dmverity.signRootHashPKCS7] → Loaded certificate: %s\n", cert.Subject)
+	fmt.Printf("[dmverity.signRootHashPKCS7] → Creating PKCS#7 signed data for %d bytes\n", len(rootHashBytes))
+
+	// Create PKCS#7 signed data structure
+	signedData, err := pkcs7.NewSignedData(rootHashBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PKCS#7 signed data: %w", err)
+	}
+
+	// Add signer with certificate
+	if err := signedData.AddSigner(cert, privateKey.(*rsa.PrivateKey), pkcs7.SignerInfoConfig{}); err != nil {
+		return nil, fmt.Errorf("failed to add signer to PKCS#7 data: %w", err)
+	}
+
+	// Finalize the signature (detached signature)
+	signature, err := signedData.Finish()
+	if err != nil {
+		return nil, fmt.Errorf("failed to finalize PKCS#7 signature: %w", err)
+	}
+
+	fmt.Printf("[dmverity.signRootHashPKCS7] ✓ Generated PKCS#7 signature: %d bytes\n", len(signature))
+	fmt.Printf("[dmverity.signRootHashPKCS7] → Signature is detached (content not embedded)\n")
+
+	return signature, nil
 }
 
 // CreateSignatureManifest creates an OCI manifest for dm-verity signatures
