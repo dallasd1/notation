@@ -14,7 +14,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,10 +145,10 @@ Example - [Experimental] Sign an OCI artifact with dm-verity per-layer signature
 			if opts.dmVerity {
 				fmt.Printf("[sign.validation] dm-verity mode enabled - validating requirements\n")
 				if opts.SignerFlagOpts.SignatureFormat != "pkcs7" {
-					fmt.Printf("[sign.validation] ✗ Error: dm-verity requires PKCS#7 format, got: %s\n", opts.SignerFlagOpts.SignatureFormat)
+					fmt.Printf("[sign.validation] Error: dm-verity requires PKCS#7 format, got: %s\n", opts.SignerFlagOpts.SignatureFormat)
 					return errors.New("dm-verity signing requires --signature-format pkcs7")
 				}
-				fmt.Printf("[sign.validation] ✓ PKCS#7 signature format validated\n")
+				fmt.Printf("[sign.validation] PKCS#7 signature format validated\n")
 			}
 
 			return runSign(cmd, opts)
@@ -204,9 +206,9 @@ func fetchImageManifest(ctx context.Context, sigRepo notationregistry.Repository
 	}
 
 	// Sign-specific logging (this part remains coupled to sign command)
-	fmt.Printf("[sign.fetchImageManifest] ✓ Successfully fetched manifest with %d layers\n", len(manifest.Layers))
+	fmt.Printf("[sign.fetchImageManifest] Successfully fetched manifest with %d layers\n", len(manifest.Layers))
 	for i, layer := range manifest.Layers {
-		fmt.Printf("[sign.fetchImageManifest] → Layer %d: %s (%s, %d bytes)\n", i+1, layer.Digest, layer.MediaType, layer.Size)
+		fmt.Printf("[sign.fetchImageManifest] Layer %d: %s (%s, %d bytes)\n", i+1, layer.Digest, layer.MediaType, layer.Size)
 	}
 
 	return manifest, nil
@@ -242,23 +244,23 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 	if cmdOpts.dmVerity {
 		// dm-verity signing: process layers instead of signing the manifest
 		fmt.Printf("*** [sign.runSign] Starting dm-verity signing workflow for: %s ***\n", manifestDesc.Digest)
-		fmt.Printf("[sign.runSign] → Using signature format: %s\n", cmdOpts.SignerFlagOpts.SignatureFormat)
-		fmt.Printf("[sign.runSign] → Using signer key: %s\n", cmdOpts.SignerFlagOpts.Key)
+		fmt.Printf("[sign.runSign] Using signature format: %s\n", cmdOpts.SignerFlagOpts.SignatureFormat)
+		fmt.Printf("[sign.runSign] Using signer key: %s\n", cmdOpts.SignerFlagOpts.Key)
 
 		// Fetch the manifest from the repository
-		fmt.Printf("[sign.runSign] → Fetching manifest for: %s\n", manifestDesc.Digest)
+		fmt.Printf("[sign.runSign] Fetching manifest for: %s\n", manifestDesc.Digest)
 		manifest, err := fetchImageManifest(ctx, sigRepo, manifestDesc, cmdOpts.reference)
 		if err != nil {
 			return fmt.Errorf("failed to fetch manifest: %w", err)
 		}
 
-		fmt.Printf("[sign.runSign] → Retrieved manifest with %d layers\n", len(manifest.Layers))
+		fmt.Printf("[sign.runSign]  Retrieved manifest with %d layers\n", len(manifest.Layers))
 		for i, layer := range manifest.Layers {
 			fmt.Printf("[sign.runSign]   Layer %d: %s (%s, %d bytes)\n", i+1, layer.Digest, layer.MediaType, layer.Size)
 		}
 
 		// Create blob fetcher for layer data
-		fmt.Printf("[sign.runSign] → Creating blob fetcher for layer data...\n")
+		fmt.Printf("[sign.runSign]  Creating blob fetcher for layer data...\n")
 		ref, err := registry.ParseReference(cmdOpts.reference)
 		if err != nil {
 			return fmt.Errorf("failed to parse reference: %w", err)
@@ -273,31 +275,50 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 		}
 
 		// Sign all layers with dm-verity using the decoupled fetcher
-		fmt.Printf("[sign.runSign] → Calling dmverity.SignImageLayers...\n")
+		fmt.Printf("[sign.runSign]  Calling dmverity.SignImageLayers...\n")
 		layerSignatures, err := dmverity.SignImageLayers(ctx, signer, blobFetcher, *manifest)
 		if err != nil {
 			return fmt.Errorf("failed to sign layers with dm-verity: %w", err)
 		}
 
-		fmt.Printf("[sign.runSign] ✓ Successfully generated dm-verity signatures for %d layers\n", len(layerSignatures))
+		fmt.Printf("[sign.runSign]  Successfully generated dm-verity signatures for %d layers\n", len(layerSignatures))
 
 		// Create signature manifest
-		fmt.Printf("[sign.runSign] → Creating signature manifest...\n")
+		fmt.Printf("[sign.runSign]  Creating signature manifest...\n")
 		sigManifest, err := dmverity.CreateSignatureManifest(layerSignatures, manifestDesc)
 		if err != nil {
 			return fmt.Errorf("failed to create signature manifest: %w", err)
 		}
 
-		// Store the signature manifest (placeholder for now)
-		fmt.Printf("[sign.runSign] ✓ Created signature manifest with %d layer signatures\n", len(sigManifest.Layers))
-		fmt.Printf("[sign.runSign] ✓ Successfully signed %s with dm-verity\n", manifestDesc.Digest)
+		// Show the signature manifest that will be pushed
+		fmt.Printf("[sign.runSign]  Created signature manifest with %d layer signatures\n", len(sigManifest.Layers))
 
-		artifactManifestDesc = manifestDesc
-		sigManifestDesc = ocispec.Descriptor{
-			MediaType: sigManifest.MediaType,
-			Digest:    digest.FromString("mock_signature_manifest"), // TODO: Calculate actual digest
-			Size:      0,                                            // TODO: Calculate actual size
+		// Serialize and display the manifest
+		manifestJSON, err := json.MarshalIndent(sigManifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal signature manifest: %w", err)
 		}
+
+		manifestDigest := digest.FromBytes(manifestJSON)
+
+		fmt.Printf("\n" + strings.Repeat("=", 100) + "\n")
+		fmt.Printf("DM-VERITY SIGNATURE MANIFEST (Containerd-Compatible Format)\n")
+		fmt.Printf("Digest: %s\n", manifestDigest)
+		fmt.Printf("Size: %d bytes\n", len(manifestJSON))
+		fmt.Printf(strings.Repeat("=", 100) + "\n")
+		fmt.Printf("%s\n", string(manifestJSON))
+		fmt.Printf(strings.Repeat("=", 100) + "\n\n")
+
+		fmt.Printf(" Manifest validated - pushing to registry\n\n")
+
+		// Push the manifest and blobs to registry
+		sigManifestDesc, err = pushDmVerityManifest(ctx, remoteRepo, sigManifest, layerSignatures)
+		if err != nil {
+			return fmt.Errorf("failed to push dm-verity manifest: %w", err)
+		}
+
+		fmt.Printf("[sign.runSign]  Successfully signed %s with dm-verity\n", manifestDesc.Digest)
+		artifactManifestDesc = manifestDesc
 	} else {
 		artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
 	}
@@ -357,4 +378,50 @@ func prepareSigningOpts(ctx context.Context, opts *signOpts) (notation.SignOptio
 		signOpts.TSARevocationValidator = tsaRevocationValidator
 	}
 	return signOpts, nil
+}
+
+// pushDmVerityManifest pushes dm-verity signature manifest and layers to the registry
+func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigManifest *dmverity.SignatureManifest, layerSignatures []dmverity.LayerSignature) (ocispec.Descriptor, error) {
+	fmt.Printf("[sign.pushDmVerityManifest] Pushing %d signature layers to registry\n", len(layerSignatures))
+
+	// Serialize the manifest first to show it
+	manifestJSON, err := json.MarshalIndent(sigManifest, "", "  ")
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to marshal signature manifest: %w", err)
+	}
+
+	// Calculate manifest descriptor
+	manifestDigest := digest.FromBytes(manifestJSON)
+	manifestDesc := ocispec.Descriptor{
+		MediaType: sigManifest.MediaType,
+		Digest:    manifestDigest,
+		Size:      int64(len(manifestJSON)),
+	}
+
+	fmt.Printf("[sign.pushDmVerityManifest]  Manifest digest: %s (%d bytes)\n", manifestDigest, len(manifestJSON))
+
+	// Push each signature layer blob first
+	for i, sig := range layerSignatures {
+		fmt.Printf("[sign.pushDmVerityManifest]  Pushing signature blob %d/%d (%d bytes)\n", i+1, len(layerSignatures), len(sig.Signature))
+
+		// Push the signature blob
+		desc := sigManifest.Layers[i]
+		err := repo.Blobs().Push(ctx, desc, bytes.NewReader(sig.Signature))
+		if err != nil {
+			return ocispec.Descriptor{}, fmt.Errorf("failed to push signature blob for layer %s: %w", sig.LayerDigest, err)
+		}
+
+		fmt.Printf("[sign.pushDmVerityManifest]  Pushed signature blob: %s\n", desc.Digest)
+	}
+
+	fmt.Printf("[sign.pushDmVerityManifest]  Pushing manifest (%d bytes, digest: %s)\n", len(manifestJSON), manifestDigest)
+
+	// Push the manifest
+	err = repo.Manifests().Push(ctx, manifestDesc, bytes.NewReader(manifestJSON))
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("failed to push signature manifest: %w", err)
+	}
+
+	fmt.Printf("[sign.pushDmVerityManifest]  Successfully pushed dm-verity signature manifest\n")
+	return manifestDesc, nil
 }

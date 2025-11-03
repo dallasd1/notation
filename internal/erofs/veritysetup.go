@@ -139,7 +139,7 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 		return "", fmt.Errorf("veritysetup format failed: %w", err)
 	}
 
-	fmt.Printf("[veritysetup] ✓ Calculated root hash: %s\n", rootHash)
+	fmt.Printf("[veritysetup]  Calculated root hash: %s\n", rootHash)
 	return rootHash, nil
 } // runVeritysetupFormat executes veritysetup format and extracts the root hash
 // Following containerd PR #9 implementation pattern

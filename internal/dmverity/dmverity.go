@@ -19,6 +19,7 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -61,29 +62,29 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 			i+1, len(manifest.Layers), layer.Digest.String(), layer.Size, layer.MediaType)
 
 		// Download layer blob using the decoupled fetcher
-		fmt.Printf("[dmverity.SignImageLayers] → Fetching layer blob data for %s\n", layer.Digest.String())
+		fmt.Printf("[dmverity.SignImageLayers]  Fetching layer blob data for %s\n", layer.Digest.String())
 
 		layerData, err := fetcher.FetchBlob(ctx, layer)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch layer blob: %w", err)
 		}
-		fmt.Printf("[dmverity.SignImageLayers] → Retrieved %d bytes of layer data\n", len(layerData))
+		fmt.Printf("[dmverity.SignImageLayers]  Retrieved %d bytes of layer data\n", len(layerData))
 
 		// Generate dm-verity root hash for this layer
-		fmt.Printf("[dmverity.SignImageLayers] → Generating dm-verity root hash for layer %s\n", layer.Digest.String())
+		fmt.Printf("[dmverity.SignImageLayers]  Generating dm-verity root hash for layer %s\n", layer.Digest.String())
 		rootHash, err := generateDmVerityRootHash(layerData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate dm-verity root hash for layer %s: %w", layer.Digest.String(), err)
 		}
-		fmt.Printf("[dmverity.SignImageLayers] → Generated root hash: %s\n", rootHash)
+		fmt.Printf("[dmverity.SignImageLayers]  Generated root hash: %s\n", rootHash)
 
 		// Sign the root hash using PKCS#7
-		fmt.Printf("[dmverity.SignImageLayers] → Signing root hash with PKCS#7 format\n")
+		fmt.Printf("[dmverity.SignImageLayers]  Signing root hash with PKCS#7 format\n")
 		signature, err := signRootHashPKCS7(ctx, signer, rootHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign root hash for layer %s: %w", layer.Digest.String(), err)
 		}
-		fmt.Printf("[dmverity.SignImageLayers] → Generated PKCS#7 signature: %d bytes\n", len(signature))
+		fmt.Printf("[dmverity.SignImageLayers]  Generated PKCS#7 signature: %d bytes\n", len(signature))
 
 		layerSig := LayerSignature{
 			LayerDigest: layer.Digest.String(),
@@ -91,7 +92,7 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 			Signature:   signature,
 		}
 		signatures = append(signatures, layerSig)
-		fmt.Printf("[dmverity.SignImageLayers] → Completed layer %d: digest=%s, rootHash=%s, sigBytes=%d\n",
+		fmt.Printf("[dmverity.SignImageLayers]  Completed layer %d: digest=%s, rootHash=%s, sigBytes=%d\n",
 			i+1, layerSig.LayerDigest, layerSig.RootHash, len(layerSig.Signature))
 	}
 
@@ -110,16 +111,16 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 	ctx := context.Background()
 
 	// Step 1: Convert tar.gz layer to EROFS format using modular converter
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 1: Converting tar.gz to EROFS...\n")
+	fmt.Printf("[dmverity.generateDmVerityRootHash]  Step 1: Converting tar.gz to EROFS...\n")
 	converter := erofs.NewConverter("")
 	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerData)
 	if err != nil {
 		return "", fmt.Errorf("EROFS conversion failed: %w", err)
 	}
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Created EROFS image: %d bytes\n", len(erofsData))
+	fmt.Printf("[dmverity.generateDmVerityRootHash]  Created EROFS image: %d bytes\n", len(erofsData))
 
 	// Step 2: Calculate dm-verity root hash using modular veritysetup utilities
-	fmt.Printf("[dmverity.generateDmVerityRootHash] → Step 2: Computing dm-verity Merkle tree root hash...\n")
+	fmt.Printf("[dmverity.generateDmVerityRootHash]  Step 2: Computing dm-verity Merkle tree root hash...\n")
 	calculator := erofs.NewVerityCalculator("")
 	opts := erofs.DefaultVeritysetupOptions()
 	rootHash, err := calculator.CalculateRootHash(ctx, erofsData, &opts)
@@ -127,7 +128,7 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 		return "", fmt.Errorf("dm-verity root hash calculation failed: %w", err)
 	}
 
-	fmt.Printf("[dmverity.generateDmVerityRootHash] ✓ Generated dm-verity root hash: %s\n", rootHash)
+	fmt.Printf("[dmverity.generateDmVerityRootHash]  Generated dm-verity root hash: %s\n", rootHash)
 	return rootHash, nil
 }
 
@@ -135,7 +136,7 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 // PROTOTYPE: Direct PKCS#7 signing bypassing notation-go (which doesn't support PKCS#7 yet)
 func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash string) ([]byte, error) {
 	fmt.Printf("[dmverity.signRootHashPKCS7] Signing root hash: %s\n", rootHash)
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Using PROTOTYPE direct PKCS#7 signing\n")
+	fmt.Printf("[dmverity.signRootHashPKCS7]  Using PROTOTYPE direct PKCS#7 signing\n")
 
 	// Convert hex root hash to bytes for signing
 	rootHashBytes, err := hex.DecodeString(rootHash)
@@ -185,8 +186,8 @@ func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash str
 		return nil, fmt.Errorf("failed to parse certificate: %w", err)
 	}
 
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Loaded certificate: %s\n", cert.Subject)
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Creating PKCS#7 signed data for %d bytes\n", len(rootHashBytes))
+	fmt.Printf("[dmverity.signRootHashPKCS7]  Loaded certificate: %s\n", cert.Subject)
+	fmt.Printf("[dmverity.signRootHashPKCS7]  Creating PKCS#7 signed data for %d bytes\n", len(rootHashBytes))
 
 	// Create PKCS#7 signed data structure
 	signedData, err := pkcs7.NewSignedData(rootHashBytes)
@@ -205,8 +206,8 @@ func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash str
 		return nil, fmt.Errorf("failed to finalize PKCS#7 signature: %w", err)
 	}
 
-	fmt.Printf("[dmverity.signRootHashPKCS7] ✓ Generated PKCS#7 signature: %d bytes\n", len(signature))
-	fmt.Printf("[dmverity.signRootHashPKCS7] → Signature is detached (content not embedded)\n")
+	fmt.Printf("[dmverity.signRootHashPKCS7]  Generated PKCS#7 signature: %d bytes\n", len(signature))
+	fmt.Printf("[dmverity.signRootHashPKCS7]  Signature is detached (content not embedded)\n")
 
 	return signature, nil
 }
@@ -214,44 +215,52 @@ func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash str
 // CreateSignatureManifest creates an OCI manifest for dm-verity signatures
 func CreateSignatureManifest(signatures []LayerSignature, subjectManifest ocispec.Descriptor) (*SignatureManifest, error) {
 	fmt.Printf("[dmverity.CreateSignatureManifest] Creating signature manifest for %d layer signatures\n", len(signatures))
-	fmt.Printf("[dmverity.CreateSignatureManifest] → Subject manifest: %s (%s, %d bytes)\n",
+	fmt.Printf("[dmverity.CreateSignatureManifest]  Subject manifest: %s (%s, %d bytes)\n",
 		subjectManifest.Digest, subjectManifest.MediaType, subjectManifest.Size)
 
+	// Use the exact format containerd expects for dm-verity signatures
 	sigManifest := &SignatureManifest{
 		SchemaVersion: 2,
 		MediaType:     "application/vnd.oci.image.manifest.v1+json",
-		ArtifactType:  "application/vnd.cncf.notary.signature.dm-verity",
+		ArtifactType:  "application/vnd.oci.mt.pkcs7", // Containerd-compatible artifact type
 		Config: ocispec.Descriptor{
 			MediaType: "application/vnd.oci.empty.v1+json",
-			Digest:    digest.FromString("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"),
+			Digest:    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
 			Size:      2,
 		},
 		Subject: &subjectManifest,
 		Annotations: map[string]string{
-			"io.cncf.notary.dm-verity.signature": "true",
+			"org.opencontainers.image.created": "2025-11-03T00:00:00Z", // TODO: Use actual timestamp
 		},
 	}
 
-	fmt.Printf("[dmverity.CreateSignatureManifest] → Created manifest structure with artifact type: %s\n", sigManifest.ArtifactType)
+	fmt.Printf("[dmverity.CreateSignatureManifest]  Created manifest structure with artifact type: %s\n", sigManifest.ArtifactType)
 
-	// Create a layer descriptor for each signature
-	fmt.Printf("[dmverity.CreateSignatureManifest] → Building layer descriptors for signatures\n")
+	// Create a layer descriptor for each signature in containerd-compatible format
+	fmt.Printf("[dmverity.CreateSignatureManifest]  Building layer descriptors for signatures\n")
 	for i, sig := range signatures {
-		fmt.Printf("[dmverity.CreateSignatureManifest] → Processing signature %d: layer=%s, rootHash=%s, sigSize=%d\n",
+		fmt.Printf("[dmverity.CreateSignatureManifest]  Processing signature %d: layer=%s, rootHash=%s, sigSize=%d\n",
 			i+1, sig.LayerDigest, sig.RootHash, len(sig.Signature))
 
+		// Calculate actual digest of the signature blob
+		sigDigest := digest.FromBytes(sig.Signature)
+
+		// Base64 encode the PKCS#7 signature for the annotation (containerd format)
+		sigBase64 := base64.StdEncoding.EncodeToString(sig.Signature)
+
 		layerDesc := ocispec.Descriptor{
-			MediaType: "application/pkcs7-signature",
-			Digest:    digest.FromString(fmt.Sprintf("mock_signature_digest_%d", i)), // TODO: Calculate actual digest
+			MediaType: "application/vnd.oci.image.layer.v1.erofs.sig", // Containerd-compatible media type
+			Digest:    sigDigest,
 			Size:      int64(len(sig.Signature)),
 			Annotations: map[string]string{
-				"io.cncf.notary.layer.digest":        sig.LayerDigest,
-				"io.cncf.notary.dm-verity.root-hash": sig.RootHash,
-				"org.opencontainers.image.title":     fmt.Sprintf("layer-%d.pkcs7.sig", i),
+				"image.layer.digest":    sig.LayerDigest,
+				"image.layer.root_hash": sig.RootHash,
+				"image.layer.signature": sigBase64,
+				"signature.blob.name":   fmt.Sprintf("signature_for_layer_%s.json", sig.LayerDigest[7:]), // Remove "sha256:" prefix
 			},
 		}
 		sigManifest.Layers = append(sigManifest.Layers, layerDesc)
-		fmt.Printf("[dmverity.CreateSignatureManifest] → Added layer descriptor: %s (%d bytes)\n",
+		fmt.Printf("[dmverity.CreateSignatureManifest]  Added layer descriptor: %s (%d bytes)\n",
 			layerDesc.Digest, layerDesc.Size)
 	}
 
