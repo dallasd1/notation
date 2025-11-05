@@ -15,22 +15,19 @@
 package dmverity
 
 import (
+	"bytes"
 	"context"
-	"crypto"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/pem"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/notaryproject/notation-go"
 	"github.com/notaryproject/notation/v2/internal/erofs"
 	"github.com/notaryproject/notation/v2/internal/registryutil"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"go.mozilla.org/pkcs7"
 )
 
 // LayerSignature represents a dm-verity signature for a single layer
@@ -132,82 +129,74 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 	return rootHash, nil
 }
 
-// signRootHashPKCS7 signs a dm-verity root hash using PKCS#7 format
-// PROTOTYPE: Direct PKCS#7 signing bypassing notation-go (which doesn't support PKCS#7 yet)
+// signRootHashPKCS7 signs a dm-verity root hash using PKCS#7 format via OpenSSL
+// Uses OpenSSL for containerd compatibility
 func signRootHashPKCS7(ctx context.Context, signer notation.Signer, rootHash string) ([]byte, error) {
 	fmt.Printf("[dmverity.signRootHashPKCS7] Signing root hash: %s\n", rootHash)
-	fmt.Printf("[dmverity.signRootHashPKCS7]  Using PROTOTYPE direct PKCS#7 signing\n")
+	fmt.Printf("[dmverity.signRootHashPKCS7] Using OpenSSL smime -sign for PKCS#7\n")
 
-	// Convert hex root hash to bytes for signing
-	rootHashBytes, err := hex.DecodeString(rootHash)
+	// Check if OpenSSL is available
+	opensslPath, err := exec.LookPath("openssl")
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode root hash from hex: %w", err)
+		return nil, fmt.Errorf("openssl not found in PATH (required for PKCS#7 signing): %w", err)
+	}
+	fmt.Printf("[dmverity.signRootHashPKCS7] Found OpenSSL: %s\n", opensslPath)
+
+	// TODO: Integrate with notation's signer interface for dynamic key/cert loading
+	keyPath := "/root/source/notation/dbsigner.key"
+	certPath := "/root/source/notation/signerca.pem"
+
+	// Verify files exist
+	if _, err := os.Stat(keyPath); err != nil {
+		return nil, fmt.Errorf("private key not found at %s: %w", keyPath, err)
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		return nil, fmt.Errorf("certificate not found at %s: %w", certPath, err)
 	}
 
-	// PROTOTYPE: Load signing key and certificate directly from filesystem
-	// TODO: Integrate properly with notation's signer interface
-	keyPath := os.Getenv("HOME") + "/.config/notation/localkeys/dmverity-test.key"
-	certPath := os.Getenv("HOME") + "/.config/notation/localkeys/dmverity-test.crt"
+	// Build OpenSSL command for PKCS#7 signing:
+	// openssl smime -sign -noattr -binary -inkey <key> -signer <cert> -outform der
+	//
+	// Flags:
+	// -sign: Create PKCS#7 signature
+	// -noattr: No signed attributes (required for containerd compatibility)
+	// -binary: Binary input mode
+	// -inkey: Private key file
+	// -signer: Certificate file
+	// -outform der: Output in DER format
+	//
+	// Input: hex string of root hash (e.g., "a181ece8b70d621f23cddb2d17624048...")
+	// Output: DER-encoded PKCS#7 signature
+	cmd := exec.CommandContext(ctx, "openssl", "smime",
+		"-sign",
+		"-noattr", // No signed attributes - required for containerd
+		"-binary",
+		"-inkey", keyPath,
+		"-signer", certPath,
+		"-outform", "der",
+	)
 
-	// Load private key
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key: %w", err)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, fmt.Errorf("failed to decode PEM block containing private key")
-	}
+	// Sign the hex string of the root hash (not the decoded raw bytes)
+	cmd.Stdin = strings.NewReader(rootHash)
 
-	var privateKey crypto.PrivateKey
-	switch keyBlock.Type {
-	case "RSA PRIVATE KEY":
-		privateKey, err = x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
-	case "PRIVATE KEY":
-		privateKey, err = x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
-	default:
-		return nil, fmt.Errorf("unsupported key type: %s", keyBlock.Type)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
-	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-	// Load certificate
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read certificate: %w", err)
-	}
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil {
-		return nil, fmt.Errorf("failed to decode PEM block containing certificate")
-	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse certificate: %w", err)
+	fmt.Printf("[dmverity.signRootHashPKCS7] Running: openssl smime -sign -noattr -binary -inkey %s -signer %s -outform der\n",
+		keyPath, certPath)
+	fmt.Printf("[dmverity.signRootHashPKCS7] Signing hex string (%d chars): %s\n", len(rootHash), rootHash)
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("openssl smime failed: %w, stderr: %s", err, stderr.String())
 	}
 
-	fmt.Printf("[dmverity.signRootHashPKCS7]  Loaded certificate: %s\n", cert.Subject)
-	fmt.Printf("[dmverity.signRootHashPKCS7]  Creating PKCS#7 signed data for %d bytes\n", len(rootHashBytes))
-
-	// Create PKCS#7 signed data structure
-	signedData, err := pkcs7.NewSignedData(rootHashBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create PKCS#7 signed data: %w", err)
+	signature := stdout.Bytes()
+	if len(signature) == 0 {
+		return nil, fmt.Errorf("openssl produced empty signature, stderr: %s", stderr.String())
 	}
 
-	// Add signer with certificate
-	if err := signedData.AddSigner(cert, privateKey.(*rsa.PrivateKey), pkcs7.SignerInfoConfig{}); err != nil {
-		return nil, fmt.Errorf("failed to add signer to PKCS#7 data: %w", err)
-	}
-
-	// Finalize the signature (detached signature)
-	signature, err := signedData.Finish()
-	if err != nil {
-		return nil, fmt.Errorf("failed to finalize PKCS#7 signature: %w", err)
-	}
-
-	fmt.Printf("[dmverity.signRootHashPKCS7]  Generated PKCS#7 signature: %d bytes\n", len(signature))
-	fmt.Printf("[dmverity.signRootHashPKCS7]  Signature is detached (content not embedded)\n")
+	fmt.Printf("[dmverity.signRootHashPKCS7] Generated PKCS#7 signature: %d bytes (DER format)\n", len(signature))
 
 	return signature, nil
 }

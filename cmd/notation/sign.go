@@ -400,7 +400,34 @@ func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigMani
 
 	fmt.Printf("[sign.pushDmVerityManifest]  Manifest digest: %s (%d bytes)\n", manifestDigest, len(manifestJSON))
 
-	// Push each signature layer blob first
+	// Push the empty config blob (required by OCI Image Manifest spec)
+	// Digest: sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+	// Content: "{}" (2 bytes)
+	//
+	// OCI Image Manifest spec requires a config descriptor even for artifact manifests
+	// like signatures. An empty config blob is the standard approach for artifacts.
+	emptyConfig := []byte("{}")
+	emptyConfigDesc := sigManifest.Config
+	fmt.Printf("[sign.pushDmVerityManifest]  Pushing empty config blob: %s (%d bytes)\n", emptyConfigDesc.Digest, emptyConfigDesc.Size)
+
+	// Try to push the empty config blob
+	// It's OK if it already exists (registries typically return 409 Conflict or similar)
+	err = repo.Blobs().Push(ctx, emptyConfigDesc, bytes.NewReader(emptyConfig))
+	if err != nil {
+		// Check if blob already exists by trying to stat it
+		_, statErr := repo.Blobs().Resolve(ctx, emptyConfigDesc.Digest.String())
+		if statErr == nil {
+			// Blob exists, this is fine
+			fmt.Printf("[sign.pushDmVerityManifest]  Empty config blob already exists (OK)\n")
+		} else {
+			// Both push and stat failed - this is a real error
+			return ocispec.Descriptor{}, fmt.Errorf("failed to push empty config blob and verify it exists: push error: %w, stat error: %v", err, statErr)
+		}
+	} else {
+		fmt.Printf("[sign.pushDmVerityManifest]  Successfully pushed empty config blob\n")
+	}
+
+	// Push each signature layer blob
 	for i, sig := range layerSignatures {
 		fmt.Printf("[sign.pushDmVerityManifest]  Pushing signature blob %d/%d (%d bytes)\n", i+1, len(layerSignatures), len(sig.Signature))
 
@@ -408,13 +435,37 @@ func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigMani
 		desc := sigManifest.Layers[i]
 		err := repo.Blobs().Push(ctx, desc, bytes.NewReader(sig.Signature))
 		if err != nil {
-			return ocispec.Descriptor{}, fmt.Errorf("failed to push signature blob for layer %s: %w", sig.LayerDigest, err)
+			// Check if blob already exists
+			_, statErr := repo.Blobs().Resolve(ctx, desc.Digest.String())
+			if statErr == nil {
+				// Blob exists, this is fine (maybe re-signing the same layer)
+				fmt.Printf("[sign.pushDmVerityManifest]  Signature blob already exists: %s (OK)\n", desc.Digest)
+			} else {
+				// Both push and stat failed - this is a real error
+				return ocispec.Descriptor{}, fmt.Errorf("failed to push signature blob for layer %s: push error: %w, stat error: %v", sig.LayerDigest, err, statErr)
+			}
+		} else {
+			fmt.Printf("[sign.pushDmVerityManifest]  Successfully pushed signature blob: %s\n", desc.Digest)
 		}
-
-		fmt.Printf("[sign.pushDmVerityManifest]  Pushed signature blob: %s\n", desc.Digest)
 	}
 
-	fmt.Printf("[sign.pushDmVerityManifest]  Pushing manifest (%d bytes, digest: %s)\n", len(manifestJSON), manifestDigest)
+	// Verify all required blobs are present before pushing manifest
+	fmt.Printf("[sign.pushDmVerityManifest]  Verifying all blobs exist before pushing manifest...\n")
+
+	// Verify empty config blob
+	if _, err := repo.Blobs().Resolve(ctx, emptyConfigDesc.Digest.String()); err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("empty config blob missing before manifest push: %w", err)
+	}
+
+	// Verify all signature blobs
+	for i := range layerSignatures {
+		desc := sigManifest.Layers[i]
+		if _, err := repo.Blobs().Resolve(ctx, desc.Digest.String()); err != nil {
+			return ocispec.Descriptor{}, fmt.Errorf("signature blob %s missing before manifest push: %w", desc.Digest, err)
+		}
+	}
+
+	fmt.Printf("[sign.pushDmVerityManifest]  All blobs verified - pushing manifest (%d bytes, digest: %s)\n", len(manifestJSON), manifestDigest)
 
 	// Push the manifest
 	err = repo.Manifests().Push(ctx, manifestDesc, bytes.NewReader(manifestJSON))

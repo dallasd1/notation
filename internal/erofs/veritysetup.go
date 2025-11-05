@@ -45,13 +45,15 @@ type VeritysetupOptions struct {
 	DataBlocks uint64
 	// Offset where hash tree begins (calculated automatically if not set)
 	HashOffset uint64
-} // DefaultVeritysetupOptions returns default dm-verity options
+}
+
+// DefaultVeritysetupOptions returns default dm-verity options for containerd compatibility
 func DefaultVeritysetupOptions() VeritysetupOptions {
 	return VeritysetupOptions{
 		Salt:          "0000000000000000000000000000000000000000000000000000000000000000",
 		HashAlgorithm: "sha256",
-		DataBlockSize: 4096,
-		HashBlockSize: 4096,
+		DataBlockSize: 512, // 512-byte blocks for containerd compatibility
+		HashBlockSize: 512, // 512-byte blocks for containerd compatibility
 	}
 }
 
