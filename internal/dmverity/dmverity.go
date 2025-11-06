@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/notaryproject/notation-go"
 	"github.com/notaryproject/notation/v2/internal/erofs"
@@ -219,7 +220,7 @@ func CreateSignatureManifest(signatures []LayerSignature, subjectManifest ocispe
 		},
 		Subject: &subjectManifest,
 		Annotations: map[string]string{
-			"org.opencontainers.image.created": "2025-11-03T00:00:00Z", // TODO: Use actual timestamp
+			"org.opencontainers.image.created": time.Now().UTC().Format(time.RFC3339),
 		},
 	}
 

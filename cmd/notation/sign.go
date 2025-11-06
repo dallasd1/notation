@@ -219,9 +219,14 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 	ctx := cmdOpts.LoggingFlagOpts.InitializeLogger(command.Context())
 
 	// initialize
-	signer, err := sign.GetSigner(ctx, &cmdOpts.SignerFlagOpts)
-	if err != nil {
-		return err
+	// Note: dm-verity mode uses hardcoded key paths and doesn't need the signer interface
+	var signer sign.Signer
+	var err error
+	if !cmdOpts.dmVerity {
+		signer, err = sign.GetSigner(ctx, &cmdOpts.SignerFlagOpts)
+		if err != nil {
+			return err
+		}
 	}
 	sigRepo, err := getRepository(ctx, cmdOpts.inputType, cmdOpts.reference, &cmdOpts.SecureFlagOpts, cmdOpts.forceReferrersTag)
 	if err != nil {
