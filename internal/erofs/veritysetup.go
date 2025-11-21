@@ -27,33 +27,33 @@ import (
 )
 
 const (
-	// veritysetupTimeout is the maximum time allowed for veritysetup to complete
+	// veritysetupTimeout is the maximum time allowed for a single veritysetup invocation.
 	veritysetupTimeout = 5 * time.Minute
+	// defaultSalt is an all-zero 64 hex char salt for deterministic builds.
+	defaultSalt = "0000000000000000000000000000000000000000000000000000000000000000"
+	// defaultHashAlgorithm is the dm-verity hash algorithm.
+	defaultHashAlgorithm = "sha256"
+	// defaultBlockSize is the data & hash block size (containerd prototype uses 512 bytes).
+	defaultBlockSize = 512
 )
 
 // VeritysetupOptions contains configuration for dm-verity operations
 type VeritysetupOptions struct {
-	// Salt for hashing (hex string, e.g., "0000...0000")
-	Salt string
-	// Hash algorithm (default: sha256)
-	HashAlgorithm string
-	// Data block size in bytes (default: 4096)
-	DataBlockSize uint32
-	// Hash block size in bytes (default: 4096)
-	HashBlockSize uint32
-	// Number of data blocks (calculated automatically if not set)
-	DataBlocks uint64
-	// Offset where hash tree begins (calculated automatically if not set)
-	HashOffset uint64
+	Salt          string // Hex salt. All-zero keeps output deterministic.
+	HashAlgorithm string // Hash algorithm (sha256)
+	DataBlockSize uint32 // Data block size in bytes
+	HashBlockSize uint32 // Hash block size in bytes
+	DataBlocks    uint64 // Calculated if zero
+	HashOffset    uint64 // Set to data size (start of Merkle tree)
 }
 
 // DefaultVeritysetupOptions returns default dm-verity options for containerd compatibility
 func DefaultVeritysetupOptions() VeritysetupOptions {
 	return VeritysetupOptions{
-		Salt:          "0000000000000000000000000000000000000000000000000000000000000000",
-		HashAlgorithm: "sha256",
-		DataBlockSize: 512, // 512-byte blocks for containerd compatibility
-		HashBlockSize: 512, // 512-byte blocks for containerd compatibility
+		Salt:          defaultSalt,
+		HashAlgorithm: defaultHashAlgorithm,
+		DataBlockSize: defaultBlockSize,
+		HashBlockSize: defaultBlockSize,
 	}
 }
 
@@ -93,10 +93,15 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 		opts = &defaultOpts
 	}
 
-	// Create temporary file for EROFS data + hash tree
-	// We need extra space for the hash tree (approximately 1% of data size, rounded up)
+	// Early availability check for clearer error.
+	if _, err := exec.LookPath("veritysetup"); err != nil {
+		return "", fmt.Errorf("veritysetup not found in PATH (install cryptsetup): %w", err)
+	}
+
+	// Allocate temp file sized for data + Merkle tree. Approximate hash tree size with 1% + 8KiB.
+	// TODO: Replace with exact Merkle tree size calculation for large images.
 	dataSize := int64(len(erofsData))
-	hashSize := (dataSize / 100) + 8192 // Extra space for hash tree
+	hashSize := (dataSize / 100) + 8192
 	totalSize := dataSize + hashSize
 
 	erofsFile, err := os.CreateTemp(v.TempDir, "erofs-verity-*.img")
@@ -122,18 +127,15 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 	fmt.Printf("[veritysetup] Computing dm-verity root hash for %d byte EROFS image...\n", len(erofsData))
 	fmt.Printf("[veritysetup] Allocated %d bytes total (data: %d, hash: %d)\n", totalSize, dataSize, hashSize)
 
-	// Set hash offset to start after data
+	// Hash tree begins immediately after data region.
 	opts.HashOffset = uint64(dataSize)
 
-	// Calculate number of data blocks
+	// Calculate number of data blocks (ceiling division for partial tail block).
 	blockSize := uint64(opts.DataBlockSize)
 	if blockSize == 0 {
-		blockSize = 4096
+		blockSize = defaultBlockSize
 	}
-	opts.DataBlocks = uint64(dataSize) / blockSize
-	if uint64(dataSize)%blockSize != 0 {
-		opts.DataBlocks++
-	}
+	ops.DataBlocks = (uint64(dataSize) + (blockSize - 1)) / blockSize
 
 	// Run veritysetup format to calculate root hash
 	rootHash, err := v.runVeritysetupFormat(ctx, erofsPath, erofsPath, opts)
@@ -145,6 +147,7 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 	return rootHash, nil
 } // runVeritysetupFormat executes veritysetup format and extracts the root hash
 // Following containerd PR #9 implementation pattern
+// runVeritysetupFormat executes 'veritysetup format' and parses the root hash.
 func (v *VerityCalculator) runVeritysetupFormat(ctx context.Context, dataDevice, hashDevice string, opts *VeritysetupOptions) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, veritysetupTimeout)
 	defer cancel()

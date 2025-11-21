@@ -12,6 +12,34 @@
 // limitations under the License.
 
 // Package erofs provides utilities for converting OCI layer tarballs to EROFS filesystem format.
+// EROFS (Enhanced Read-Only File System) is a lightweight, high-performance read-only filesystem
+// designed for container images and other read-only workloads.
+//
+// The package implements a "tar index mode" conversion strategy using mkfs.erofs --tar=i, which
+// creates EROFS metadata that references the original tar file rather than extracting it.
+// This approach offers several advantages:
+//   - Faster conversion (no tar extraction required)
+//   - Lower memory usage (streaming tar data directly)
+//   - Better compatibility with container runtimes that expect tar layers
+//   - Maintains original tar structure for tools that need it
+//
+// The resulting EROFS image consists of:
+//  1. EROFS metadata (filesystem structure, inodes, etc.)
+//  2. Original tar data appended after metadata
+//  3. 512-byte alignment padding for block device compatibility
+//
+// This design allows container runtimes to mount the EROFS filesystem while still
+// having access to the underlying tar data when needed.
+//
+// Example usage:
+//
+//	converter := erofs.NewConverter("")
+//	erofsData, err := converter.ConvertLayerToEROFS(ctx, gzippedLayerBytes)
+//	if err != nil {
+//	    return err
+//	}
+//	// erofsData now contains the EROFS filesystem image
+//
 // This is a general-purpose package decoupled from any specific command logic (sign, verify, etc).
 // It can be reused anywhere EROFS conversion is needed.
 package erofs
@@ -21,20 +49,22 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 )
 
 const (
-	// mkfsErofsTimeout is the maximum time allowed for mkfs.erofs to complete
+	// mkfsErofsTimeout is the maximum time allowed for mkfs.erofs to complete.
 	mkfsErofsTimeout = 5 * time.Minute
+	// blockAlignment is the dm-verity data block size we align to for deterministic hashing.
+	blockAlignment = 512
+	// fixedMetadataUUID is the deterministic UUID used for tar index EROFS builds.
+	// TODO: Replace with content-derived UUID (see README future enhancements).
+	fixedMetadataUUID = "c1b9d5a2-f162-11cf-9ece-0020afc76f16"
 )
 
 // Converter provides EROFS filesystem conversion capabilities.
-// Decoupled from dm-verity logic - this is purely about tar -> EROFS conversion.
 type Converter struct {
 	// TempDir is the directory for temporary file operations
 	// If empty, os.TempDir() will be used
@@ -91,10 +121,9 @@ func (c *Converter) decompressGzip(compressedData []byte) ([]byte, error) {
 	defer gzReader.Close()
 
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, gzReader); err != nil {
+	if _, err := buf.ReadFrom(gzReader); err != nil {
 		return nil, fmt.Errorf("failed to decompress gzip: %w", err)
 	}
-
 	return buf.Bytes(), nil
 }
 
@@ -142,8 +171,8 @@ func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []by
 	cmd := exec.CommandContext(cmdCtx, "mkfs.erofs",
 		"--tar=i", // tar index mode
 		"-T", "0", // Zero unix time
-		"--mkfs-time",                                // Clear mkfs time
-		"-U", "c1b9d5a2-f162-11cf-9ece-0020afc76f16", // Fixed UUID for determinism
+		"--mkfs-time",           // Clear mkfs time
+		"-U", fixedMetadataUUID, // Fixed UUID (deterministic builds)
 		"--aufs",  // OCI whiteout conversion
 		"--quiet", // Quiet mode
 		erofsPath,
@@ -154,7 +183,7 @@ func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []by
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	fmt.Printf("[erofs.Converter] Running: mkfs.erofs --tar=i -T0 -U<uuid> --mkfs-time --aufs --quiet %s %s\n", filepath.Base(erofsPath), filepath.Base(tarPath))
+	fmt.Printf("[erofs.Converter] Running: %s\n", cmd.String())
 
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("mkfs.erofs failed: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
@@ -166,67 +195,18 @@ func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []by
 		return nil, fmt.Errorf("failed to read EROFS metadata: %w", err)
 	}
 
-	// Append tar data to EROFS metadata
-	fmt.Printf("[erofs.Converter] Appending %d bytes of tar to %d bytes of EROFS metadata\n", len(tarData), len(erofsMetadata))
+	// Append tar data after metadata to form the EROFS image body we hash/sign.
 	combined := append(erofsMetadata, tarData...)
 
-	// Align to 512-byte boundary for proper block device alignment
-	const blockAlignment = 512
+	// Align to blockAlignment boundary. dm-verity computes hashes over full blocks;
+	// explicit zero padding removes ambiguity about tail handling and guarantees
+	// producer & verifier derive identical Merkle roots.
 	padding := (blockAlignment - (len(combined) % blockAlignment)) % blockAlignment
 	if padding > 0 {
 		combined = append(combined, make([]byte, padding)...)
-		fmt.Printf("[erofs.Converter] Added %d bytes of padding to align to %d bytes\n", padding, blockAlignment)
+		fmt.Printf("[erofs.Converter] Padded %d bytes (alignment %d)\n", padding, blockAlignment)
 	}
-
 	return combined, nil
-}
-
-// createEROFSImage runs mkfs.erofs to create an EROFS filesystem image
-func (c *Converter) createEROFSImage(ctx context.Context, sourceDir string) ([]byte, error) {
-	// Check if mkfs.erofs is available
-	if _, err := exec.LookPath("mkfs.erofs"); err != nil {
-		return nil, fmt.Errorf("mkfs.erofs not found in PATH (install erofs-utils package): %w", err)
-	}
-
-	// Create temporary file for EROFS output
-	erofsFile, err := os.CreateTemp(c.TempDir, "erofs-image-*.img")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp EROFS file: %w", err)
-	}
-	erofsPath := erofsFile.Name()
-	erofsFile.Close()
-	defer os.Remove(erofsPath)
-
-	// Run mkfs.erofs to create the filesystem
-	cmdCtx, cancel := context.WithTimeout(ctx, mkfsErofsTimeout)
-	defer cancel()
-
-	// mkfs.erofs with reproducible build options:
-	// -T0: Set fixed timestamp (epoch 0) for deterministic output
-	// -U00000000-0000-0000-0000-000000000000: Fixed UUID for deterministic output
-	// This ensures the same layer content always produces the same EROFS image
-	cmd := exec.CommandContext(cmdCtx, "mkfs.erofs",
-		"-T0",                                    // Fixed timestamp
-		"-U00000000-0000-0000-0000-000000000000", // Fixed UUID
-		erofsPath, sourceDir)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	fmt.Printf("[erofs.Converter] Running: mkfs.erofs -T0 -U00000000... %s %s\n", erofsPath, sourceDir)
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("mkfs.erofs failed: %w, stdout: %s, stderr: %s", err, stdout.String(), stderr.String())
-	}
-
-	// Read the EROFS image
-	erofsData, err := os.ReadFile(erofsPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read EROFS image: %w", err)
-	}
-
-	return erofsData, nil
 }
 
 // IsSupported checks if EROFS tools are available on the system
@@ -251,36 +231,3 @@ func IsSupported() (bool, error) {
 }
 
 // WriteToFile is a utility to write EROFS data to a file (useful for debugging/testing)
-func WriteToFile(erofsData []byte, outputPath string) error {
-	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	if err := os.WriteFile(outputPath, erofsData, 0644); err != nil {
-		return fmt.Errorf("failed to write EROFS file: %w", err)
-	}
-
-	return nil
-}
-
-// ConvertLayerToEROFSFile converts a layer and writes directly to a file (avoids loading into memory)
-func (c *Converter) ConvertLayerToEROFSFile(ctx context.Context, layerData []byte, outputPath string) error {
-	erofsData, err := c.ConvertLayerToEROFS(ctx, layerData)
-	if err != nil {
-		return err
-	}
-
-	return WriteToFile(erofsData, outputPath)
-}
-
-// ConvertLayerStreamToEROFS converts a streaming layer (useful for large layers)
-func (c *Converter) ConvertLayerStreamToEROFS(ctx context.Context, layerStream io.Reader) ([]byte, error) {
-	// Read stream into bytes (for now - could be optimized for streaming in future)
-	layerData, err := io.ReadAll(layerStream)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read layer stream: %w", err)
-	}
-
-	return c.ConvertLayerToEROFS(ctx, layerData)
-}
