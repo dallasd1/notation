@@ -101,6 +101,11 @@ func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) (
 	}
 	fmt.Printf("[erofs.Converter] Decompressed to %d bytes of tar data\n", len(tarData))
 
+	// DEBUG: Save decompressed tar
+	if debugErr := os.WriteFile("/tmp/notation_debug.tar", tarData, 0644); debugErr == nil {
+		fmt.Printf("[erofs.Converter] DEBUG: Saved decompressed tar to /tmp/notation_debug.tar\n")
+	}
+
 	// Create EROFS metadata + tar combined image
 	fmt.Printf("[erofs.Converter] Creating EROFS metadata with tar index mode...\n")
 	erofsData, err := c.createEROFSMetadataWithTar(ctx, tarData)
@@ -110,6 +115,12 @@ func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) (
 
 	fmt.Printf("[erofs.Converter] Successfully created EROFS image: %d bytes\n", len(erofsData))
 	return erofsData, nil
+}
+
+// DecompressGzipForTest exposes gzip decompression for testing/utility paths
+// where we need raw tar without full EROFS conversion.
+func (c *Converter) DecompressGzipForTest(compressedData []byte) ([]byte, error) {
+	return c.decompressGzip(compressedData)
 }
 
 // decompressGzip decompresses gzip data to raw tar bytes
@@ -194,9 +205,11 @@ func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []by
 	if err != nil {
 		return nil, fmt.Errorf("failed to read EROFS metadata: %w", err)
 	}
+	fmt.Printf("[erofs.Converter] EROFS metadata size: %d bytes\n", len(erofsMetadata))
 
 	// Append tar data after metadata to form the EROFS image body we hash/sign.
 	combined := append(erofsMetadata, tarData...)
+	fmt.Printf("[erofs.Converter] Combined (metadata + tar) size before padding: %d bytes\n", len(combined))
 
 	// Align to blockAlignment boundary. dm-verity computes hashes over full blocks;
 	// explicit zero padding removes ambiguity about tail handling and guarantees

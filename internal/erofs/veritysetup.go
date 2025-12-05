@@ -33,7 +33,9 @@ const (
 	defaultSalt = "0000000000000000000000000000000000000000000000000000000000000000"
 	// defaultHashAlgorithm is the dm-verity hash algorithm.
 	defaultHashAlgorithm = "sha256"
-	// defaultBlockSize is the data & hash block size (containerd prototype uses 512 bytes).
+	// defaultBlockSize is the data & hash block size.
+	// Kata tardev-snapshotter uses 512 for both data and hash blocks (VERITY_BLOCK_SIZE constant).
+	// This matches the append_tree function behavior used in production.
 	defaultBlockSize = 512
 )
 
@@ -98,12 +100,8 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 		return "", fmt.Errorf("veritysetup not found in PATH (install cryptsetup): %w", err)
 	}
 
-	// Allocate temp file sized for data + Merkle tree. Approximate hash tree size with 1% + 8KiB.
-	// TODO: Replace with exact Merkle tree size calculation for large images.
+	// Prepare data file (EROFS image)
 	dataSize := int64(len(erofsData))
-	hashSize := (dataSize / 100) + 8192
-	totalSize := dataSize + hashSize
-
 	erofsFile, err := os.CreateTemp(v.TempDir, "erofs-verity-*.img")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp EROFS file: %w", err)
@@ -117,28 +115,53 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 		return "", fmt.Errorf("failed to write EROFS data: %w", err)
 	}
 
-	// Extend file to accommodate hash tree
-	if err := erofsFile.Truncate(totalSize); err != nil {
-		erofsFile.Close()
-		return "", fmt.Errorf("failed to extend file for hash tree: %w", err)
-	}
 	erofsFile.Close()
 
 	fmt.Printf("[veritysetup] Computing dm-verity root hash for %d byte EROFS image...\n", len(erofsData))
-	fmt.Printf("[veritysetup] Allocated %d bytes total (data: %d, hash: %d)\n", totalSize, dataSize, hashSize)
+	// Kata production (append_tree) appends the hash tree to the same file.
+	// Set HashOffset to dataSize to match this behavior.
+	if opts.HashOffset == 0 {
+		opts.HashOffset = uint64(dataSize)
+	}
 
-	// Hash tree begins immediately after data region.
-	opts.HashOffset = uint64(dataSize)
+	// If appending to the same file, expand the data file to accommodate tree
+	var hashDevicePath string
+	if opts.HashOffset > 0 {
+		// Append mode: expand data file to hold tree
+		hashSize := (dataSize / 100) + 8192
+		totalSize := dataSize + hashSize
+		f, err := os.OpenFile(erofsPath, os.O_WRONLY, 0)
+		if err != nil {
+			return "", fmt.Errorf("failed to open EROFS file for append: %w", err)
+		}
+		if err := f.Truncate(totalSize); err != nil {
+			f.Close()
+			return "", fmt.Errorf("failed to extend file for hash tree: %w", err)
+		}
+		f.Close()
+		hashDevicePath = erofsPath
+		fmt.Printf("[veritysetup] Allocated %d bytes total (data: %d, hash ~ %d)\n", totalSize, dataSize, totalSize-dataSize)
+	} else {
+		// Separate hash device
+		hashFile, err := os.CreateTemp(v.TempDir, "erofs-verity-hash-*.img")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temp hash file: %w", err)
+		}
+		hashDevicePath = hashFile.Name()
+		hashFile.Close()
+		defer os.Remove(hashDevicePath)
+		fmt.Printf("[veritysetup] Using separate hash device: %s (offset 0)\n", hashDevicePath)
+	}
 
 	// Calculate number of data blocks (ceiling division for partial tail block).
 	blockSize := uint64(opts.DataBlockSize)
 	if blockSize == 0 {
 		blockSize = defaultBlockSize
 	}
-	ops.DataBlocks = (uint64(dataSize) + (blockSize - 1)) / blockSize
+	opts.DataBlocks = (uint64(dataSize) + (blockSize - 1)) / blockSize
 
 	// Run veritysetup format to calculate root hash
-	rootHash, err := v.runVeritysetupFormat(ctx, erofsPath, erofsPath, opts)
+	rootHash, err := v.runVeritysetupFormat(ctx, erofsPath, hashDevicePath, opts)
 	if err != nil {
 		return "", fmt.Errorf("veritysetup format failed: %w", err)
 	}

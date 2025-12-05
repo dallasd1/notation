@@ -70,7 +70,7 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 
 		// Generate dm-verity root hash for this layer
 		fmt.Printf("[dmverity.SignImageLayers]  Generating dm-verity root hash for layer %s\n", layer.Digest.String())
-		rootHash, err := generateDmVerityRootHash(layerData)
+		rootHash, err := ComputeRootHash(layerData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate dm-verity root hash for layer %s: %w", layer.Digest.String(), err)
 		}
@@ -104,7 +104,9 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 // 2. Veritysetup Calculator: EROFS -> dm-verity root hash
 //
 // This follows the pattern established by registryutil.BlobFetcher for modularity.
-func generateDmVerityRootHash(layerData []byte) (string, error) {
+// ComputeRootHash converts a compressed layer to EROFS and computes
+// its dm-verity root hash using kata-compatible parameters.
+func ComputeRootHash(layerData []byte) (string, error) {
 	fmt.Printf("[dmverity.generateDmVerityRootHash] Processing %d bytes of layer data\n", len(layerData))
 	ctx := context.Background()
 
@@ -117,8 +119,19 @@ func generateDmVerityRootHash(layerData []byte) (string, error) {
 	}
 	fmt.Printf("[dmverity.generateDmVerityRootHash]  Created EROFS image: %d bytes\n", len(erofsData))
 
-	// Step 2: Calculate dm-verity root hash using modular veritysetup utilities
+	// Step 2: Calculate dm-verity root hash using veritysetup
 	fmt.Printf("[dmverity.generateDmVerityRootHash]  Step 2: Computing dm-verity Merkle tree root hash...\n")
+
+	// DEBUG: Save EROFS image for inspection
+	debugPath := "/tmp/notation_erofs_debug.img"
+	if debugErr := os.WriteFile(debugPath, erofsData, 0644); debugErr == nil {
+		fmt.Printf("[dmverity.ComputeRootHash] DEBUG: Saved EROFS image to %s (%d bytes)\n", debugPath, len(erofsData))
+	}
+
+	// Use veritysetup with kata-compatible parameters:
+	// - 512-byte data and hash blocks (matches VERITY_BLOCK_SIZE)
+	// - Zero salt for deterministic builds
+	// - SHA256 algorithm
 	calculator := erofs.NewVerityCalculator("")
 	opts := erofs.DefaultVeritysetupOptions()
 	rootHash, err := calculator.CalculateRootHash(ctx, erofsData, &opts)

@@ -69,6 +69,9 @@ func run() error {
 		inspectCommand(nil),
 	)
 
+	// Add experimental verity command to print dm-verity root hashes
+	addVerityCommand(cmd)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	return cmd.ExecuteContext(ctx)
