@@ -52,6 +52,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -59,9 +61,6 @@ const (
 	mkfsErofsTimeout = 5 * time.Minute
 	// blockAlignment is the dm-verity data block size we align to for deterministic hashing.
 	blockAlignment = 512
-	// fixedMetadataUUID is the deterministic UUID used for tar index EROFS builds.
-	// TODO: Replace with content-derived UUID (see README future enhancements).
-	fixedMetadataUUID = "c1b9d5a2-f162-11cf-9ece-0020afc76f16"
 )
 
 // Converter provides EROFS filesystem conversion capabilities.
@@ -92,7 +91,7 @@ func NewConverter(tempDir string) *Converter {
 // 3. Append the raw tar file to EROFS metadata
 // 4. Align to 512-byte boundary
 // 5. Return combined (EROFS metadata + tar) data
-func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) ([]byte, error) {
+func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte, layerDigest string) ([]byte, error) {
 	// Decompress gzip to get raw tar
 	fmt.Printf("[erofs.Converter] Decompressing %d bytes of gzip data...\n", len(layerData))
 	tarData, err := c.decompressGzip(layerData)
@@ -108,7 +107,9 @@ func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) (
 
 	// Create EROFS metadata + tar combined image
 	fmt.Printf("[erofs.Converter] Creating EROFS metadata with tar index mode...\n")
-	erofsData, err := c.createEROFSMetadataWithTar(ctx, tarData)
+	layerUUID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("erofs:blobs/"+layerDigest)).String()
+	fmt.Printf("[erofs.Converter] DEBUG: layerUUID=%s (from digest: %s)\n", layerUUID, layerDigest)
+	erofsData, err := c.createEROFSMetadataWithTar(ctx, tarData, layerUUID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EROFS metadata: %w", err)
 	}
@@ -139,7 +140,7 @@ func (c *Converter) decompressGzip(compressedData []byte) ([]byte, error) {
 }
 
 // createEROFSMetadataWithTar creates EROFS metadata using --tar=i mode and appends the tar file.
-func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []byte) ([]byte, error) {
+func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []byte, layerUUID string) ([]byte, error) {
 	// Check if mkfs.erofs is available
 	if _, err := exec.LookPath("mkfs.erofs"); err != nil {
 		return nil, fmt.Errorf("mkfs.erofs not found in PATH (install erofs-utils package): %w", err)
@@ -182,8 +183,8 @@ func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []by
 	cmd := exec.CommandContext(cmdCtx, "mkfs.erofs",
 		"--tar=i", // tar index mode
 		"-T", "0", // Zero unix time
-		"--mkfs-time",           // Clear mkfs time
-		"-U", fixedMetadataUUID, // Fixed UUID (deterministic builds)
+		"--mkfs-time",   // Clear mkfs time
+		"-U", layerUUID, // Content-derived UUID (from layer digest)
 		"--aufs",  // OCI whiteout conversion
 		"--quiet", // Quiet mode
 		erofsPath,

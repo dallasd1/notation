@@ -83,7 +83,7 @@ func runVerity(cmd *cobra.Command, opts *verityOpts) error {
 		if err != nil {
 			return fmt.Errorf("failed to fetch layer %s: %w", layer.Digest, err)
 		}
-		root, err := computeRootHash(data)
+		root, err := computeRootHash(data, layer.Digest.String())
 		if err != nil {
 			return fmt.Errorf("failed to compute root hash for %s: %w", layer.Digest, err)
 		}
@@ -93,7 +93,7 @@ func runVerity(cmd *cobra.Command, opts *verityOpts) error {
 	return nil
 }
 
-func computeRootHash(layerData []byte) (string, error) {
+func computeRootHash(layerData []byte, layerDigest string) (string, error) {
 	// Compute dm-verity root hash over EROFS metadata + tar combined file.
 	// This matches kata tardev-snapshotter production behavior:
 	// 1. Decompress gzip → tar
@@ -102,7 +102,7 @@ func computeRootHash(layerData []byte) (string, error) {
 	// 4. Compute dm-verity tree with 512-byte blocks (append_tree function)
 	//
 	// The EROFS path uses the same mkfs.erofs args and block sizes as kata.
-	return dmverity.ComputeRootHash(layerData)
+	return dmverity.ComputeRootHash(layerData, layerDigest)
 }
 
 // Wire command into root

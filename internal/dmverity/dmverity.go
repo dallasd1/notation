@@ -70,7 +70,7 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 
 		// Generate dm-verity root hash for this layer
 		fmt.Printf("[dmverity.SignImageLayers]  Generating dm-verity root hash for layer %s\n", layer.Digest.String())
-		rootHash, err := ComputeRootHash(layerData)
+		rootHash, err := ComputeRootHash(layerData, layer.Digest.String())
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate dm-verity root hash for layer %s: %w", layer.Digest.String(), err)
 		}
@@ -106,14 +106,14 @@ func SignImageLayers(ctx context.Context, signer notation.Signer, fetcher *regis
 // This follows the pattern established by registryutil.BlobFetcher for modularity.
 // ComputeRootHash converts a compressed layer to EROFS and computes
 // its dm-verity root hash using kata-compatible parameters.
-func ComputeRootHash(layerData []byte) (string, error) {
+func ComputeRootHash(layerData []byte, layerDigest string) (string, error) {
 	fmt.Printf("[dmverity.generateDmVerityRootHash] Processing %d bytes of layer data\n", len(layerData))
 	ctx := context.Background()
 
 	// Step 1: Convert tar.gz layer to EROFS format using modular converter
 	fmt.Printf("[dmverity.generateDmVerityRootHash]  Step 1: Converting tar.gz to EROFS...\n")
 	converter := erofs.NewConverter("")
-	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerData)
+	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerData, layerDigest)
 	if err != nil {
 		return "", fmt.Errorf("EROFS conversion failed: %w", err)
 	}
