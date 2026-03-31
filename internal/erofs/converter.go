@@ -60,14 +60,15 @@ func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) (
 		return nil, fmt.Errorf("failed to decompress gzip: %w", err)
 	}
 
-	erofsData, err := c.createEROFSMetadataWithTar(ctx, tarData)
+	erofsData, err := c.buildEROFSImage(ctx, tarData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create EROFS metadata: %w", err)
+		return nil, fmt.Errorf("failed to build EROFS image: %w", err)
 	}
 
 	return erofsData, nil
 }
 
+// decompressGzip decompresses gzip-compressed data and returns the raw tar data.
 func (c *Converter) decompressGzip(compressedData []byte) ([]byte, error) {
 	gzReader, err := gzip.NewReader(bytes.NewReader(compressedData))
 	if err != nil {
@@ -82,7 +83,10 @@ func (c *Converter) decompressGzip(compressedData []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (c *Converter) createEROFSMetadataWithTar(ctx context.Context, tarData []byte) ([]byte, error) {
+// buildEROFSImage creates an EROFS image from tar data using mkfs.erofs --tar=i.
+// It generates EROFS metadata, appends the original tar data, and aligns the result
+// to 512 bytes for dm-verity compatibility.
+func (c *Converter) buildEROFSImage(ctx context.Context, tarData []byte) ([]byte, error) {
 	if _, err := exec.LookPath("mkfs.erofs"); err != nil {
 		return nil, fmt.Errorf("mkfs.erofs not found in PATH: install 'erofs-utils' package (apt install erofs-utils / dnf install erofs-utils): %w", err)
 	}

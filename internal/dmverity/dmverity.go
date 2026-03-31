@@ -28,8 +28,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// LayerSignature holds a dm-verity signature for a single layer.
-type LayerSignature struct {
+// SignatureEnvelope holds a dm-verity PKCS#7 signature envelope for a single layer.
+type SignatureEnvelope struct {
 	LayerDigest string
 	RootHash    string
 	Signature   []byte
@@ -46,9 +46,9 @@ type SignatureManifest struct {
 	Annotations   map[string]string    `json:"annotations,omitempty"`
 }
 
-// SignImageLayers signs all layers in an OCI image with dm-verity PKCS#7.
-func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetcher *registryutil.BlobFetcher, manifest ocispec.Manifest) ([]LayerSignature, error) {
-	var signatures []LayerSignature
+// SignImageLayers signs all layer root hashes from OCI blob, generates PKCS#7 envelope, returns array of envelopes
+func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetcher *registryutil.BlobFetcher, manifest ocispec.Manifest) ([]SignatureEnvelope, error) {
+	var signatures []SignatureEnvelope
 
 	for _, layer := range manifest.Layers {
 		layerData, err := fetcher.FetchBlob(ctx, layer)
@@ -66,7 +66,7 @@ func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetc
 			return nil, fmt.Errorf("failed to sign root hash for layer %s: %w", layer.Digest.String(), err)
 		}
 
-		layerSig := LayerSignature{
+		layerSig := SignatureEnvelope{
 			LayerDigest: layer.Digest.String(),
 			RootHash:    rootHash,
 			Signature:   sig,
@@ -77,7 +77,7 @@ func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetc
 	return signatures, nil
 }
 
-// ComputeRootHash converts a compressed layer to EROFS and computes its dm-verity root hash.
+// ComputeRootHash converts a compressed layer blob to an EROFS image and computes its root hash.
 func ComputeRootHash(layerData []byte) (string, error) {
 	ctx := context.Background()
 
@@ -97,6 +97,7 @@ func ComputeRootHash(layerData []byte) (string, error) {
 	return rootHash, nil
 }
 
+// signRootHashPKCS7 creates a PKCS#7 signature envelope for the given root hash using the provided signer.
 func signRootHashPKCS7(primitiveSigner signature.Signer, rootHash string) ([]byte, error) {
 	env := pkcs7.NewEnvelope()
 
@@ -121,18 +122,13 @@ func signRootHashPKCS7(primitiveSigner signature.Signer, rootHash string) ([]byt
 }
 
 // CreateSignatureManifest builds an OCI referrer manifest for dm-verity signatures.
-func CreateSignatureManifest(signatures []LayerSignature, subjectManifest ocispec.Descriptor) (*SignatureManifest, error) {
+func CreateSignatureManifest(signatures []SignatureEnvelope, subjectManifest ocispec.Descriptor) (*SignatureManifest, error) {
 	sigManifest := &SignatureManifest{
 		SchemaVersion: 2,
 		MediaType:     "application/vnd.oci.image.manifest.v1+json",
 		ArtifactType:  "application/vnd.oci.mt.pkcs7",
-		Config: ocispec.Descriptor{
-			MediaType: "application/vnd.oci.empty.v1+json",
-			// sha256 of "{}" — OCI standard empty config
-			Digest: "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-			Size:   2,
-		},
-		Subject: &subjectManifest,
+		Config:        ocispec.DescriptorEmptyJSON,
+		Subject:       &subjectManifest,
 		Annotations: map[string]string{
 			"org.opencontainers.image.created": time.Now().UTC().Format(time.RFC3339),
 		},

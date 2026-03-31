@@ -45,7 +45,8 @@ func NewBlobFetcher(ctx context.Context, reference string, remoteRepo *remote.Re
 	}, nil
 }
 
-// FetchManifest fetches and parses an OCI image manifest.
+// FetchManifest fetches the manifest from the registry and extracts it into an ocispec.Manifest struct.
+// With a json object returned by the registry, we can iterate through the layers and fetch each layer blob to compute the root hash and signature.
 func (f *BlobFetcher) FetchManifest(ctx context.Context, manifestDesc ocispec.Descriptor) (*ocispec.Manifest, error) {
 	reader, err := f.remoteRepo.Fetch(ctx, manifestDesc)
 	if err != nil {

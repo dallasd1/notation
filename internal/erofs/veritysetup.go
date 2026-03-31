@@ -138,6 +138,7 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 	return rootHash, nil
 }
 
+// runVeritysetupFormat executes the veritysetup format command and extracts the root hash from its output.
 func (v *VerityCalculator) runVeritysetupFormat(ctx context.Context, dataDevice, hashDevice string, opts *VeritysetupOptions) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, veritysetupTimeout)
 	defer cancel()

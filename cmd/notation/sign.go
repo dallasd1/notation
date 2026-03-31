@@ -27,7 +27,6 @@ import (
 	"github.com/notaryproject/notation-core-go/revocation/purpose"
 	"github.com/notaryproject/notation-go"
 	"github.com/notaryproject/notation-go/log"
-	notationregistry "github.com/notaryproject/notation-go/registry"
 	"github.com/notaryproject/notation/v2/cmd/notation/internal/experimental"
 	"github.com/notaryproject/notation/v2/cmd/notation/internal/flag"
 	"github.com/notaryproject/notation/v2/cmd/notation/internal/sign"
@@ -128,7 +127,7 @@ Example - [Experimental] Sign an OCI artifact with dm-verity layer signatures (P
 			if opts.ociLayout {
 				opts.inputType = inputTypeOCILayout
 			}
-			return experimental.CheckFlagsAndWarn(cmd, "oci-layout")
+			return experimental.CheckFlagsAndWarn(cmd, "oci-layout", "dm-verity")
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// timestamping
@@ -169,13 +168,13 @@ Linux kernel dm-verity and containerd erofs-snapshotter. Requires: mkfs.erofs, v
 }
 
 // fetchImageManifest fetches and parses an OCI manifest using registryutil.BlobFetcher.
-func fetchImageManifest(ctx context.Context, sigRepo notationregistry.Repository, manifestDesc ocispec.Descriptor, reference string) (*ocispec.Manifest, error) {
+func fetchImageManifest(ctx context.Context, secureOpts *flag.SecureFlagOpts, manifestDesc ocispec.Descriptor, reference string) (*ocispec.Manifest, error) {
 	ref, err := registry.ParseReference(reference)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse reference: %w", err)
 	}
 
-	remoteRepo, err := getRepositoryClient(ctx, &flag.SecureFlagOpts{}, ref)
+	remoteRepo, err := getRepositoryClient(ctx, secureOpts, ref)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository client: %w", err)
 	}
@@ -223,7 +222,8 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 	// core process
 	var artifactManifestDesc, sigManifestDesc ocispec.Descriptor
 	if cmdOpts.dmVerity {
-		manifest, err := fetchImageManifest(ctx, sigRepo, manifestDesc, cmdOpts.reference)
+		// dm-verity flow: sign layers with PKCS#7, push signatures, sign manifest with JWS/COSE
+		manifest, err := fetchImageManifest(ctx, &cmdOpts.SecureFlagOpts, manifestDesc, cmdOpts.reference)
 		if err != nil {
 			return fmt.Errorf("failed to fetch manifest: %w", err)
 		}
@@ -232,7 +232,7 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse reference: %w", err)
 		}
-		remoteRepo, err := getRepositoryClient(ctx, &flag.SecureFlagOpts{}, ref)
+		remoteRepo, err := getRepositoryClient(ctx, &cmdOpts.SecureFlagOpts, ref)
 		if err != nil {
 			return fmt.Errorf("failed to get repository client: %w", err)
 		}
@@ -263,14 +263,14 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 
 		manifestDigest := digest.FromBytes(manifestJSON)
 
+		logger := log.GetLogger(ctx)
 		separator := strings.Repeat("=", 100)
-		fmt.Printf("\n%s\n", separator)
-		fmt.Printf("DM-VERITY LAYER SIGNATURE MANIFEST (PKCS#7 Format)\n")
-		fmt.Printf("Digest: %s\n", manifestDigest)
-		fmt.Printf("Size: %d bytes\n", len(manifestJSON))
-		fmt.Printf("%s\n", separator)
-		fmt.Printf("%s\n", string(manifestJSON))
-		fmt.Printf("%s\n\n", separator)
+		logger.Debugf("\n%s\n", separator)
+		logger.Debugf("Digest: %s\n", manifestDigest)
+		logger.Debugf("Size: %d bytes\n", len(manifestJSON))
+		logger.Debugf("%s\n", separator)
+		logger.Debugf("%s\n", string(manifestJSON))
+		logger.Debugf("%s\n\n", separator)
 
 		layerSigManifestDesc, err := pushDmVerityManifest(ctx, remoteRepo, sigManifest, layerSignatures)
 		if err != nil {
@@ -278,15 +278,9 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 		}
 
 		fmt.Fprintf(os.Stderr, "Pushed dm-verity layer signatures: %s\n", layerSigManifestDesc.Digest)
-
-		// Sign the image manifest itself with standard JWS/COSE
-		artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
-		if err != nil {
-			return fmt.Errorf("failed to sign manifest: %w", err)
-		}
-	} else {
-		artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
 	}
+
+	artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
 	if err != nil {
 		var referrerError *remote.ReferrersError
 		if !errors.As(err, &referrerError) || !referrerError.IsReferrersIndexDelete() {
@@ -345,7 +339,9 @@ func prepareSigningOpts(ctx context.Context, opts *signOpts) (notation.SignOptio
 	return signOpts, nil
 }
 
-func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigManifest *dmverity.SignatureManifest, layerSignatures []dmverity.LayerSignature) (ocispec.Descriptor, error) {
+// pushDmVerityManifest pushes the dm-verity signature manifest and layer signatures to the registry, returns descriptor of the pushed manifest.
+// It pushes the layer signatures as blobs, then pushes the manifest referencing those blobs. It verifies that all blobs are present in the registry before pushing the manifest to avoid a broken state where the manifest is pushed with missing blobs.
+func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigManifest *dmverity.SignatureManifest, layerSignatures []dmverity.SignatureEnvelope) (ocispec.Descriptor, error) {
 	manifestJSON, err := json.MarshalIndent(sigManifest, "", "  ")
 	if err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("failed to marshal signature manifest: %w", err)
