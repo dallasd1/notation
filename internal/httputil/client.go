@@ -20,12 +20,15 @@ import (
 	"github.com/notaryproject/notation/v2/internal/trace"
 	"github.com/notaryproject/notation/v2/internal/version"
 	"oras.land/oras-go/v2/registry/remote/auth"
+	"oras.land/oras-go/v2/registry/remote/retry"
 )
 
 var userAgent = "notation/" + version.GetVersion()
 
-// NewAuthClient returns an *auth.Client with debug log and user agent set
+// NewAuthClient returns an *auth.Client with retry, debug log and user agent
+// set.
 func NewAuthClient(ctx context.Context, httpClient *http.Client) *auth.Client {
+	httpClient = withRetry(httpClient)
 	httpClient = trace.SetHTTPDebugLog(ctx, httpClient)
 	client := &auth.Client{
 		Client:   httpClient,
@@ -36,10 +39,25 @@ func NewAuthClient(ctx context.Context, httpClient *http.Client) *auth.Client {
 	return client
 }
 
-// NewClient returns an *http.Client with debug log and user agent set
+// NewClient returns an *http.Client with retry, debug log and user agent set.
 func NewClient(ctx context.Context, client *http.Client) *http.Client {
+	client = withRetry(client)
 	client = trace.SetHTTPDebugLog(ctx, client)
 	return SetUserAgent(client)
+}
+
+// withRetry wraps the client's transport with retry logic using exponential
+// backoff. It retries on 5xx errors, 429, 408, and network timeouts.
+func withRetry(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = retry.NewTransport(base)
+	return client
 }
 
 type userAgentTransport struct {
