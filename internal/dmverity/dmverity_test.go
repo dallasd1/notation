@@ -20,7 +20,7 @@ import (
 )
 
 func TestCreateSignatureManifest(t *testing.T) {
-	sigs := []LayerSignature{
+	sigs := []SignatureEnvelope{
 		{LayerDigest: "sha256:abc", RootHash: "hash1", Signature: []byte("sig")},
 	}
 	subject := ocispec.Descriptor{Digest: "sha256:subject"}
