@@ -35,7 +35,7 @@ func TestCreateSignatureManifest(t *testing.T) {
 	if len(m.Layers) != 1 {
 		t.Fatalf("Layers = %d, want 1", len(m.Layers))
 	}
-	if m.Layers[0].Annotations["image.layer.digest"] != "sha256:abc" {
+	if m.Layers[0].Annotations["io.cncf.notary.dmverity.layer-digest"] != "sha256:abc" {
 		t.Fatal("layer digest annotation mismatch")
 	}
 }

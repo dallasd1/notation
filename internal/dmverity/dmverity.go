@@ -126,7 +126,7 @@ func CreateSignatureManifest(signatures []SignatureEnvelope, subjectManifest oci
 	sigManifest := &SignatureManifest{
 		SchemaVersion: 2,
 		MediaType:     "application/vnd.oci.image.manifest.v1+json",
-		ArtifactType:  "application/vnd.oci.mt.pkcs7",
+		ArtifactType:  "application/vnd.cncf.notary.dmverity.v1",
 		Config:        ocispec.DescriptorEmptyJSON,
 		Subject:       &subjectManifest,
 		Annotations: map[string]string{
@@ -139,14 +139,13 @@ func CreateSignatureManifest(signatures []SignatureEnvelope, subjectManifest oci
 		sigBase64 := base64.StdEncoding.EncodeToString(sig.Signature)
 
 		layerDesc := ocispec.Descriptor{
-			MediaType: "application/vnd.oci.image.layer.v1.erofs.sig",
+			MediaType: "application/vnd.cncf.notary.dmverity.layer-signature+pkcs7",
 			Digest:    sigDigest,
 			Size:      int64(len(sig.Signature)),
 			Annotations: map[string]string{
-				"image.layer.digest":    sig.LayerDigest,
-				"image.layer.root_hash": sig.RootHash,
-				"image.layer.signature": sigBase64,
-				"signature.blob.name":   fmt.Sprintf("signature_for_layer_%s.json", sig.LayerDigest[7:]), // Remove "sha256:" prefix
+				"io.cncf.notary.dmverity.layer-digest":    sig.LayerDigest,
+				"io.cncf.notary.dmverity.layer-roothash":  sig.RootHash,
+				"io.cncf.notary.dmverity.layer-signature": sigBase64,
 			},
 		}
 		sigManifest.Layers = append(sigManifest.Layers, layerDesc)
