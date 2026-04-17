@@ -67,6 +67,7 @@ func run() error {
 		logoutCommand(nil),
 		versionCommand(),
 		inspectCommand(nil),
+		dmverityCommand(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
