@@ -38,6 +38,11 @@ type verifyOpts struct {
 	trustPolicyScope     string
 	inputType            inputType
 	maxSignatureAttempts int
+
+	// dm-verity flags (experimental)
+	dmVerity    bool
+	caPath      string
+	noRecompute bool
 }
 
 func verifyCommand(opts *verifyOpts) *cobra.Command {
@@ -62,6 +67,12 @@ Example - [Experimental] Verify a signature on an OCI artifact referenced in an 
 
 Example - [Experimental] Verify a signature on an OCI artifact identified by a tag and referenced in an OCI layout using trust policy statement specified by scope.
   notation verify --oci-layout <registry>/<repository>:<tag> --scope <trust_policy_scope>
+
+Example - [Experimental] Verify dm-verity layer signatures attached to an OCI image, checking each PKCS#7 signature against a user-supplied CA bundle:
+  notation verify --dm-verity --ca <pem-path> <registry>/<repository>@<digest>
+
+Example - [Experimental] Verify dm-verity layer signatures without re-deriving the EROFS root hash from the layer blob (annotation-only mode; weaker integrity):
+  notation verify --dm-verity --ca <pem-path> --no-recompute <registry>/<repository>@<digest>
 `
 	command := &cobra.Command{
 		Use:   "verify [reference]",
@@ -79,9 +90,16 @@ Example - [Experimental] Verify a signature on an OCI artifact identified by a t
 				opts.inputType = inputTypeOCILayout
 			}
 			opts.printer = output.NewPrinter(cmd.OutOrStdout(), cmd.OutOrStderr())
-			return experimental.CheckFlagsAndWarn(cmd, "oci-layout", "scope")
+			if err := validateDmverityFlags(opts); err != nil {
+				return err
+			}
+			return experimental.CheckFlagsAndWarn(cmd, "oci-layout", "scope", "dm-verity", "ca", "no-recompute")
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.dmVerity {
+				ctx := opts.LoggingFlagOpts.InitializeLogger(cmd.Context())
+				return runVerifyDmVerity(ctx, opts)
+			}
 			if opts.maxSignatureAttempts <= 0 {
 				return fmt.Errorf("max-signatures value %d must be a positive number", opts.maxSignatureAttempts)
 			}
@@ -95,9 +113,43 @@ Example - [Experimental] Verify a signature on an OCI artifact identified by a t
 	command.Flags().IntVar(&opts.maxSignatureAttempts, "max-signatures", 100, "maximum number of signatures to evaluate or examine")
 	command.Flags().BoolVar(&opts.ociLayout, "oci-layout", false, "[Experimental] verify the artifact stored as OCI image layout")
 	command.Flags().StringVar(&opts.trustPolicyScope, "scope", "", "[Experimental] set trust policy scope for artifact verification, required and can only be used when flag \"--oci-layout\" is set")
+	command.Flags().BoolVar(&opts.dmVerity, "dm-verity", false, "[Experimental] verify dm-verity layer signatures attached as an OCI referrer instead of the standard manifest signature")
+	command.Flags().StringVar(&opts.caPath, "ca", "", "[Experimental] path to a PEM file containing one or more trusted root CA certificates; required with --dm-verity")
+	command.Flags().BoolVar(&opts.noRecompute, "no-recompute", false, "[Experimental] skip re-deriving the EROFS dm-verity root hash from the layer blob (only proves a trusted signer signed SOME root hash; weaker integrity)")
 	command.MarkFlagsRequiredTogether("oci-layout", "scope")
-	experimental.HideFlags(command, experimentalExamples, []string{"oci-layout", "scope"})
+	experimental.HideFlags(command, experimentalExamples, []string{"oci-layout", "scope", "dm-verity", "ca", "no-recompute"})
 	return command
+}
+
+// validateDmverityFlags rejects nonsensical flag combinations involving
+// --dm-verity, --ca, and --no-recompute. Returns nil when the flags are
+// internally consistent.
+func validateDmverityFlags(opts *verifyOpts) error {
+	if !opts.dmVerity {
+		if opts.caPath != "" {
+			return errors.New("--ca is only valid with --dm-verity")
+		}
+		if opts.noRecompute {
+			return errors.New("--no-recompute is only valid with --dm-verity")
+		}
+		return nil
+	}
+	if opts.caPath == "" {
+		return errors.New("--ca is required when --dm-verity is set")
+	}
+	if opts.ociLayout {
+		return errors.New("--dm-verity is not supported with --oci-layout; pass a registry reference instead")
+	}
+	if opts.trustPolicyScope != "" {
+		return errors.New("--scope is not used by --dm-verity (no trust policy applies)")
+	}
+	if len(opts.pluginConfig) != 0 {
+		return errors.New("--plugin-config is not used by --dm-verity (no notation plugins are invoked)")
+	}
+	if len(opts.userMetadata) != 0 {
+		return errors.New("--user-metadata is not used by --dm-verity")
+	}
+	return nil
 }
 
 func runVerify(command *cobra.Command, opts *verifyOpts) error {
