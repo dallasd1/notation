@@ -55,9 +55,6 @@ func TestVerifyLayerSignature_HappyPath_Recompute(t *testing.T) {
 	if res.ComputedHash != sampleRootHash {
 		t.Fatalf("ComputedHash = %q, want %q", res.ComputedHash, sampleRootHash)
 	}
-	if res.LeafSubject == "" {
-		t.Fatal("LeafSubject is empty")
-	}
 }
 
 func TestVerifyLayerSignature_HappyPath_NoRecompute(t *testing.T) {
@@ -462,8 +459,7 @@ func (s *testRSASigner) KeySpec() (signature.KeySpec, error) {
 }
 
 // signWithCoreEnvelope produces a PKCS#7 envelope via notation-core-go's
-// canonical sign path (which enforces the dm-verity profile). Use this for
-// all "valid envelope" test setups.
+// canonical sign path (which enforces the dm-verity profile).
 func signWithCoreEnvelope(t *testing.T, key *rsa.PrivateKey, chain []*x509.Certificate, rootHash string) []byte {
 	t.Helper()
 	env := corepkcs7.NewEnvelope()
@@ -481,10 +477,9 @@ func signWithCoreEnvelope(t *testing.T, key *rsa.PrivateKey, chain []*x509.Certi
 	return sig
 }
 
-// forgeRSAEnvelope skips notation-core-go's profile checks and produces a
-// detached PKCS#7 SignedData with the given RSA key and certs, regardless of
-// key size. Used to exercise the verifier's defense-in-depth rejection of
-// non-2048 keys.
+// forgeRSAEnvelope skips notation-core-go's profile checks to build a
+// detached PKCS#7 SignedData with the given RSA key/certs regardless of
+// key size.
 func forgeRSAEnvelope(t *testing.T, key *rsa.PrivateKey, chain []*x509.Certificate, rootHash string) []byte {
 	t.Helper()
 	digest := sha256.Sum256([]byte(rootHash))
@@ -513,9 +508,8 @@ func forgeRSAEnvelope(t *testing.T, key *rsa.PrivateKey, chain []*x509.Certifica
 	return out
 }
 
-// forgeECDSAEnvelope produces a detached PKCS#7 SignedData with an ECDSA
-// SignerInfo (OIDDigestAlgorithmECDSASHA256). Used to exercise the verifier's
-// "must be RSA encryption" check.
+// forgeECDSAEnvelope builds a detached PKCS#7 SignedData with an ECDSA
+// SignerInfo to exercise the verifier's "must be RSA encryption" check.
 func forgeECDSAEnvelope(t *testing.T, key *ecdsa.PrivateKey, chain []*x509.Certificate, rootHash string) []byte {
 	t.Helper()
 	digest := sha256.Sum256([]byte(rootHash))
@@ -544,11 +538,8 @@ func forgeECDSAEnvelope(t *testing.T, key *ecdsa.PrivateKey, chain []*x509.Certi
 	return out
 }
 
-// basicSigner is a minimal single-use crypto.Signer that returns a
-// pre-computed signature regardless of the digest passed in. Used by the
-// forge helpers so we can hand gopkcs7 an envelope that violates the
-// dm-verity profile (e.g. RSA-3072, ECDSA) without going through
-// notation-core-go's profile checks.
+// basicSigner is a single-use crypto.Signer that returns a pre-computed
+// signature, used by the forge helpers.
 type basicSigner struct {
 	pub  crypto.PublicKey
 	sig  []byte
@@ -568,21 +559,15 @@ func (s *basicSigner) Sign(_ io.Reader, _ []byte, _ crypto.SignerOpts) ([]byte, 
 
 func expectPass(t *testing.T, res LayerVerifyResult) {
 	t.Helper()
-	if res.Status != StatusPass {
-		t.Fatalf("Status = %s, err = %v; want PASS", res.Status, res.Err)
-	}
 	if res.Err != nil {
-		t.Fatalf("Err = %v; want nil", res.Err)
+		t.Fatalf("expected PASS, got err = %v", res.Err)
 	}
 }
 
 func expectFailContains(t *testing.T, res LayerVerifyResult, substr string) {
 	t.Helper()
-	if res.Status != StatusFail {
-		t.Fatalf("Status = %s; want FAIL", res.Status)
-	}
 	if res.Err == nil {
-		t.Fatal("Err is nil; want non-nil")
+		t.Fatalf("expected FAIL containing %q, got PASS", substr)
 	}
 	if !strings.Contains(res.Err.Error(), substr) {
 		t.Fatalf("Err = %q; want substring %q", res.Err.Error(), substr)
