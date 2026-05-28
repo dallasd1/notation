@@ -25,13 +25,22 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
-	mkfsErofsTimeout  = 5 * time.Minute
-	blockAlignment    = 512                                    // Must match erofs-snapshotter EROFS_BLOCK_ALIGNMENT
-	fixedMetadataUUID = "c1b9d5a2-f162-11cf-9ece-0020afc76f16" // Must match erofs-snapshotter EROFS_METADATA_UUID
+	mkfsErofsTimeout = 5 * time.Minute
+	blockAlignment   = 512 // Must match erofs-snapshotter EROFS_BLOCK_ALIGNMENT
 )
+
+// erofsLayerUUID derives the same per-layer UUID containerd's erofs differ
+// passes to mkfs.erofs (see containerd plugins/diff/erofs/differ.go), so the
+// EROFS superblock notation produces here matches the one containerd produces
+// at apply time. Identical superblocks -> identical dm-verity root hashes.
+func erofsLayerUUID(layerDigest string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("erofs:blobs/"+layerDigest)).String()
+}
 
 // Converter converts OCI layers to EROFS using tar-index mode.
 type Converter struct {
@@ -49,8 +58,14 @@ func NewConverter(tempDir string) *Converter {
 }
 
 // ConvertLayerToEROFS converts a compressed OCI layer (tar.gz) to EROFS format.
+// layerDigest is the OCI manifest descriptor digest of the layer (e.g.
+// "sha256:..."); it is used to derive the per-layer mkfs.erofs UUID so the
+// output matches what containerd's erofs-snapshotter produces at apply time.
 // Returns EROFS metadata + tar data, aligned to 512-byte boundary for dm-verity.
-func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) ([]byte, error) {
+func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerDigest string, layerData []byte) ([]byte, error) {
+	if layerDigest == "" {
+		return nil, fmt.Errorf("layer digest is empty")
+	}
 	if len(layerData) == 0 {
 		return nil, fmt.Errorf("layer data is empty")
 	}
@@ -60,7 +75,7 @@ func (c *Converter) ConvertLayerToEROFS(ctx context.Context, layerData []byte) (
 		return nil, fmt.Errorf("failed to decompress gzip: %w", err)
 	}
 
-	erofsData, err := c.buildEROFSImage(ctx, tarData)
+	erofsData, err := c.buildEROFSImage(ctx, layerDigest, tarData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build EROFS image: %w", err)
 	}
@@ -86,7 +101,7 @@ func (c *Converter) decompressGzip(compressedData []byte) ([]byte, error) {
 // buildEROFSImage creates an EROFS image from tar data using mkfs.erofs --tar=i.
 // It generates EROFS metadata, appends the original tar data, and aligns the result
 // to 512 bytes for dm-verity compatibility.
-func (c *Converter) buildEROFSImage(ctx context.Context, tarData []byte) ([]byte, error) {
+func (c *Converter) buildEROFSImage(ctx context.Context, layerDigest string, tarData []byte) ([]byte, error) {
 	if _, err := exec.LookPath("mkfs.erofs"); err != nil {
 		return nil, fmt.Errorf("mkfs.erofs not found in PATH: install 'erofs-utils' package (apt install erofs-utils / dnf install erofs-utils): %w", err)
 	}
@@ -115,12 +130,15 @@ func (c *Converter) buildEROFSImage(ctx context.Context, tarData []byte) ([]byte
 	cmdCtx, cancel := context.WithTimeout(ctx, mkfsErofsTimeout)
 	defer cancel()
 
-	// Flags must match erofs-snapshotter's mkfs.erofs invocation
+	// Flags must match erofs-snapshotter's mkfs.erofs invocation.
+	// The -U UUID is derived per layer from the OCI digest the same way
+	// containerd's erofs differ does it, so the superblock bytes (and thus
+	// the dm-verity root hash) line up.
 	cmd := exec.CommandContext(cmdCtx, "mkfs.erofs",
 		"--tar=i", // tar index mode
 		"-T", "0", // Zero unix time
-		"--mkfs-time",           // Clear mkfs time in superblock
-		"-U", fixedMetadataUUID, // Fixed UUID for deterministic builds
+		"--mkfs-time",                     // Clear mkfs time in superblock
+		"-U", erofsLayerUUID(layerDigest), // Per-layer UUID matching containerd
 		"--aufs",  // Convert OCI whiteouts to overlayfs metadata
 		"--quiet", // Quiet mode
 		erofsPath,

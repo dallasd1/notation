@@ -162,12 +162,12 @@ func GetPrimitiveSigner(ctx context.Context, opts *flag.SignerFlagOpts) (signatu
 			SigningSchemeConfigKey: SigningSchemePKCS1v15,
 		}
 
-		keySpec, err := signer.GetKeySpecFromPlugin(ctx, signPlugin, opts.KeyID, pluginConfig)
+		keySpec, err := signer.KeySpecFromPlugin(ctx, signPlugin, opts.KeyID, pluginConfig)
 		if err != nil {
 			return nil, err
 		}
 
-		return signer.NewPluginPrimitiveSigner(ctx, signPlugin, opts.KeyID, keySpec, pluginConfig), nil
+		return signer.NewPluginPrimitiveSigner(ctx, signPlugin, opts.KeyID, keySpec, pluginConfig)
 	}
 
 	key, err := resolveKey(opts.Key)
@@ -192,12 +192,12 @@ func GetPrimitiveSigner(ctx context.Context, opts *flag.SignerFlagOpts) (signatu
 		}
 		pluginConfig[SigningSchemeConfigKey] = SigningSchemePKCS1v15
 
-		keySpec, err := signer.GetKeySpecFromPlugin(ctx, signPlugin, key.ExternalKey.ID, pluginConfig)
+		keySpec, err := signer.KeySpecFromPlugin(ctx, signPlugin, key.ExternalKey.ID, pluginConfig)
 		if err != nil {
 			return nil, err
 		}
 
-		return signer.NewPluginPrimitiveSigner(ctx, signPlugin, key.ExternalKey.ID, keySpec, pluginConfig), nil
+		return signer.NewPluginPrimitiveSigner(ctx, signPlugin, key.ExternalKey.ID, keySpec, pluginConfig)
 	}
 
 	return nil, errors.New("unsupported key for primitive signing, either provide a local key and certificate file paths, or a key name in config.json")

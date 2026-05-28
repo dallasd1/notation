@@ -56,7 +56,7 @@ func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetc
 			return nil, fmt.Errorf("failed to fetch layer blob %s from registry: %w", layer.Digest.String(), err)
 		}
 
-		rootHash, err := ComputeRootHash(layerData)
+		rootHash, err := ComputeRootHash(layer.Digest.String(), layerData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate dm-verity root hash for layer %s: %w", layer.Digest.String(), err)
 		}
@@ -78,11 +78,14 @@ func SignImageLayers(ctx context.Context, primitiveSigner signature.Signer, fetc
 }
 
 // ComputeRootHash converts a compressed layer blob to an EROFS image and computes its root hash.
-func ComputeRootHash(layerData []byte) (string, error) {
+// layerDigest is the OCI manifest descriptor digest of the layer (e.g.
+// "sha256:..."); it is required so the EROFS superblock UUID matches what
+// containerd's erofs-snapshotter computes at apply time.
+func ComputeRootHash(layerDigest string, layerData []byte) (string, error) {
 	ctx := context.Background()
 
 	converter := erofs.NewConverter("")
-	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerData)
+	erofsData, err := converter.ConvertLayerToEROFS(ctx, layerDigest, layerData)
 	if err != nil {
 		return "", fmt.Errorf("EROFS conversion failed: %w", err)
 	}
