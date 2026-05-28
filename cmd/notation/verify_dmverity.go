@@ -17,7 +17,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/notaryproject/notation/v2/internal/dmverity"
@@ -31,6 +30,8 @@ import (
 // OCI referrer. It does not verify the image manifest's notation signature;
 // run `notation verify` (without --dm-verity) separately for that.
 func runVerifyDmVerity(ctx context.Context, opts *verifyOpts) error {
+	printer := opts.printer
+
 	roots, err := dmverity.LoadCAPool(opts.caPath)
 	if err != nil {
 		return err
@@ -81,7 +82,7 @@ func runVerifyDmVerity(ctx context.Context, opts *verifyOpts) error {
 	for i, sig := range sigManifest.Layers {
 		layerDigest := sig.Annotations[dmverity.AnnotationLayerDigest]
 		if layerDigest == "" || sig.Annotations[dmverity.AnnotationLayerRootHash] == "" {
-			fmt.Fprintf(os.Stderr, "Warning: signature #%d (%s) is missing dm-verity annotations; skipping\n", i, sig.Digest)
+			printer.PrintErrorf("Warning: signature #%d (%s) is missing dm-verity annotations; skipping\n", i, sig.Digest)
 			continue
 		}
 		if prev, exists := sigByLayer[layerDigest]; exists {
@@ -90,15 +91,14 @@ func runVerifyDmVerity(ctx context.Context, opts *verifyOpts) error {
 		sigByLayer[layerDigest] = sig
 	}
 
-	fmt.Fprintf(os.Stderr, "Verifying %d dm-verity layer signature(s) for %s (note: image manifest signature is NOT checked; run `notation verify` separately for that)\n", len(sigManifest.Layers), resolvedRef)
+	printer.PrintErrorf("Verifying %d dm-verity layer signature(s) for %s (note: image manifest signature is NOT checked; run `notation verify` separately for that)\n", len(sigManifest.Layers), resolvedRef)
 	if opts.noRecompute {
-		fmt.Fprintln(os.Stderr, "Warning: --no-recompute proves only that a trusted signer signed SOME root hash; it does NOT prove the signed hash matches the layer.")
+		printer.PrintErrorf("Warning: --no-recompute proves only that a trusted signer signed SOME root hash; it does NOT prove the signed hash matches the layer.\n")
 	}
 
 	verifier := &dmverity.LayerVerifier{
-		Roots:              roots,
-		Recompute:          !opts.noRecompute,
-		RequireCodeSignEKU: true,
+		Roots:     roots,
+		Recompute: !opts.noRecompute,
 	}
 
 	pass, fail := 0, 0
@@ -106,16 +106,16 @@ func runVerifyDmVerity(ctx context.Context, opts *verifyOpts) error {
 		res := verifyLayer(ctx, verifier, fetcher, layer, sigByLayer, opts.noRecompute)
 		if res.Err == nil {
 			pass++
-			fmt.Fprintf(os.Stderr, "PASS %s\n", res.LayerDigest)
+			printer.PrintErrorf("PASS %s\n", res.LayerDigest)
 			continue
 		}
 		fail++
-		fmt.Fprintf(os.Stderr, "FAIL %s: %s\n", res.LayerDigest, res.Err)
+		printer.PrintErrorf("FAIL %s: %s\n", res.LayerDigest, res.Err)
 	}
 
 	total := len(imageManifest.Layers)
 	if fail == 0 {
-		fmt.Fprintf(os.Stderr, "PASS: %d/%d dm-verity layer signatures verified\n", pass, total)
+		printer.PrintErrorf("PASS: %d/%d dm-verity layer signatures verified\n", pass, total)
 		return nil
 	}
 	return fmt.Errorf("dm-verity verification failed: %d/%d layers failed", fail, total)

@@ -45,10 +45,9 @@ func TestVerifyLayerSignature_HappyPath_Recompute(t *testing.T) {
 	sig := signWithCoreEnvelope(t, leafKey, []*x509.Certificate{leafCert, root}, sampleRootHash)
 
 	v := &LayerVerifier{
-		Roots:              poolOf(root),
-		Recompute:          true,
-		RequireCodeSignEKU: true,
-		RecomputeFn:        constantHash(sampleRootHash),
+		Roots:       poolOf(root),
+		Recompute:   true,
+		RecomputeFn: constantHash(sampleRootHash),
 	}
 	res := v.VerifyLayerSignature(context.Background(), "sha256:layerdigest", []byte("fake-layer-blob"), sampleRootHash, sig)
 	expectPass(t, res)
@@ -62,9 +61,8 @@ func TestVerifyLayerSignature_HappyPath_NoRecompute(t *testing.T) {
 	sig := signWithCoreEnvelope(t, leafKey, []*x509.Certificate{leafCert, root}, sampleRootHash)
 
 	v := &LayerVerifier{
-		Roots:              poolOf(root),
-		Recompute:          false,
-		RequireCodeSignEKU: true,
+		Roots:     poolOf(root),
+		Recompute: false,
 	}
 	res := v.VerifyLayerSignature(context.Background(), "sha256:layerdigest", nil, sampleRootHash, sig)
 	expectPass(t, res)
@@ -154,13 +152,12 @@ func TestVerifyLayerSignature_ExpiredCert(t *testing.T) {
 }
 
 func TestVerifyLayerSignature_NoEKU_RequiredExplicit(t *testing.T) {
-	// Go's x509.Verify treats "no EKU at all" as valid for any usage. Our
-	// explicit RequireCodeSignEKU check should still reject it.
+	// Go's x509.Verify treats "no EKU at all" as valid for any usage. The
+	// unconditional Code Signing EKU check should still reject it.
 	root, _, leafCert, leafKey := newTestPKI(t, withRSABits(2048), withNotAfter(time.Now().Add(time.Hour)) /* no EKU */)
 	sig := signWithCoreEnvelope(t, leafKey, []*x509.Certificate{leafCert, root}, sampleRootHash)
 	v := &LayerVerifier{
-		Roots:              poolOf(root),
-		RequireCodeSignEKU: true,
+		Roots: poolOf(root),
 	}
 	res := v.VerifyLayerSignature(context.Background(), "sha256:l", nil, sampleRootHash, sig)
 	expectFailContains(t, res, "Code Signing EKU")
@@ -168,12 +165,11 @@ func TestVerifyLayerSignature_NoEKU_RequiredExplicit(t *testing.T) {
 
 func TestVerifyLayerSignature_WrongEKU(t *testing.T) {
 	// Leaf with only ServerAuth EKU; x509.Verify's KeyUsages check should
-	// reject it before our explicit RequireCodeSignEKU check runs.
+	// reject it before the explicit EKU check runs.
 	root, _, leafCert, leafKey := newTestPKI(t, withEKU(x509.ExtKeyUsageServerAuth), withRSABits(2048), withNotAfter(time.Now().Add(time.Hour)))
 	sig := signWithCoreEnvelope(t, leafKey, []*x509.Certificate{leafCert, root}, sampleRootHash)
 	v := &LayerVerifier{
-		Roots:              poolOf(root),
-		RequireCodeSignEKU: true,
+		Roots: poolOf(root),
 	}
 	res := v.VerifyLayerSignature(context.Background(), "sha256:l", nil, sampleRootHash, sig)
 	expectFailContains(t, res, "x509 chain verify")

@@ -58,11 +58,6 @@ type LayerVerifier struct {
 	// some root hash, not that the hash belongs to the layer.
 	Recompute bool
 
-	// RequireCodeSignEKU, when true, requires the leaf certificate to carry
-	// the Code Signing Extended Key Usage. Go's x509.Verify treats certs
-	// with no EKU as valid for any usage; this adds an explicit check.
-	RequireCodeSignEKU bool
-
 	// Now is the time at which cert validity is evaluated. Zero means
 	// time.Now(); exposed for testability.
 	Now time.Time
@@ -172,7 +167,9 @@ func (v *LayerVerifier) VerifyLayerSignature(ctx context.Context, layerDigest st
 		return res
 	}
 
-	if v.RequireCodeSignEKU && !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageCodeSigning) {
+	// Code Signing EKU is enforced explicitly because x509.Verify treats a
+	// leaf with no EKU extension as valid for any usage.
+	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageCodeSigning) {
 		res.Err = fmt.Errorf("leaf certificate %q does not carry Code Signing EKU", leaf.Subject)
 		return res
 	}
