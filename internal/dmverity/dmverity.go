@@ -28,6 +28,16 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+// OCI media types and annotation keys used by dm-verity layer signatures.
+const (
+	ReferrerArtifactType    = "application/vnd.cncf.notary.dmverity.v1"
+	LayerSignatureMediaType = "application/vnd.cncf.notary.dmverity.layer-signature+pkcs7"
+
+	AnnotationLayerDigest    = "io.cncf.notary.dmverity.layer-digest"
+	AnnotationLayerRootHash  = "io.cncf.notary.dmverity.layer-roothash"
+	AnnotationLayerSignature = "io.cncf.notary.dmverity.layer-signature"
+)
+
 // SignatureEnvelope holds a dm-verity PKCS#7 signature envelope for a single layer.
 type SignatureEnvelope struct {
 	LayerDigest string
@@ -128,8 +138,8 @@ func signRootHashPKCS7(primitiveSigner signature.Signer, rootHash string) ([]byt
 func CreateSignatureManifest(signatures []SignatureEnvelope, subjectManifest ocispec.Descriptor) (*SignatureManifest, error) {
 	sigManifest := &SignatureManifest{
 		SchemaVersion: 2,
-		MediaType:     "application/vnd.oci.image.manifest.v1+json",
-		ArtifactType:  "application/vnd.cncf.notary.dmverity.v1",
+		MediaType:     ocispec.MediaTypeImageManifest,
+		ArtifactType:  ReferrerArtifactType,
 		Config:        ocispec.DescriptorEmptyJSON,
 		Subject:       &subjectManifest,
 		Annotations: map[string]string{
@@ -142,13 +152,13 @@ func CreateSignatureManifest(signatures []SignatureEnvelope, subjectManifest oci
 		sigBase64 := base64.StdEncoding.EncodeToString(sig.Signature)
 
 		layerDesc := ocispec.Descriptor{
-			MediaType: "application/vnd.cncf.notary.dmverity.layer-signature+pkcs7",
+			MediaType: LayerSignatureMediaType,
 			Digest:    sigDigest,
 			Size:      int64(len(sig.Signature)),
 			Annotations: map[string]string{
-				"io.cncf.notary.dmverity.layer-digest":    sig.LayerDigest,
-				"io.cncf.notary.dmverity.layer-roothash":  sig.RootHash,
-				"io.cncf.notary.dmverity.layer-signature": sigBase64,
+				AnnotationLayerDigest:    sig.LayerDigest,
+				AnnotationLayerRootHash:  sig.RootHash,
+				AnnotationLayerSignature: sigBase64,
 			},
 		}
 		sigManifest.Layers = append(sigManifest.Layers, layerDesc)
