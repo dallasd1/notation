@@ -278,6 +278,14 @@ func runSign(command *cobra.Command, cmdOpts *signOpts) error {
 		}
 
 		fmt.Fprintf(os.Stderr, "Pushed dm-verity layer signatures: %s\n", layerSigManifestDesc.Digest)
+
+		bundleSignOpts := signOpts
+		bundleSignOpts.ArtifactReference = layerSigManifestDesc.Digest.String()
+		_, bundleSigManifestDesc, err := notation.SignOCI(ctx, signer, sigRepo, bundleSignOpts)
+		if err != nil {
+			return fmt.Errorf("failed to sign dm-verity artifact bundle: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Pushed dm-verity bundle signature: %s\n", bundleSigManifestDesc.Digest)
 	}
 
 	artifactManifestDesc, sigManifestDesc, err = notation.SignOCI(ctx, signer, sigRepo, signOpts)
@@ -368,12 +376,15 @@ func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigMani
 	}
 
 	for i, sig := range layerSignatures {
-		desc := sigManifest.Layers[i]
-		err := repo.Blobs().Push(ctx, desc, bytes.NewReader(sig.Signature))
-		if err != nil {
-			_, statErr := repo.Blobs().Resolve(ctx, desc.Digest.String())
-			if statErr != nil {
-				return ocispec.Descriptor{}, fmt.Errorf("failed to push signature blob for layer %s: push: %w, stat: %v", sig.LayerDigest, err, statErr)
+		descriptors := sigManifest.Layers[i*3 : i*3+3]
+		blobs := [][]byte{sig.Signature, sig.EROFSData, sig.MerkleTree}
+		for j, desc := range descriptors {
+			err := repo.Blobs().Push(ctx, desc, bytes.NewReader(blobs[j]))
+			if err != nil {
+				_, statErr := repo.Blobs().Resolve(ctx, desc.Digest.String())
+				if statErr != nil {
+					return ocispec.Descriptor{}, fmt.Errorf("failed to push dm-verity blob %s for layer %s: push: %w, stat: %v", desc.Digest, sig.LayerDigest, err, statErr)
+				}
 			}
 		}
 	}
@@ -382,10 +393,9 @@ func pushDmVerityManifest(ctx context.Context, repo registry.Repository, sigMani
 	if _, err := repo.Blobs().Resolve(ctx, emptyConfigDesc.Digest.String()); err != nil {
 		return ocispec.Descriptor{}, fmt.Errorf("empty config blob missing before manifest push: %w", err)
 	}
-	for i := range layerSignatures {
-		desc := sigManifest.Layers[i]
+	for _, desc := range sigManifest.Layers {
 		if _, err := repo.Blobs().Resolve(ctx, desc.Digest.String()); err != nil {
-			return ocispec.Descriptor{}, fmt.Errorf("signature blob %s missing before manifest push: %w", desc.Digest, err)
+			return ocispec.Descriptor{}, fmt.Errorf("dm-verity blob %s missing before manifest push: %w", desc.Digest, err)
 		}
 	}
 

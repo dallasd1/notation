@@ -39,6 +39,15 @@ type VeritysetupOptions struct {
 	HashBlockSize uint32
 	DataBlocks    uint64
 	HashOffset    uint64
+	UUID          string
+}
+
+// VerityArtifact contains the precomputed dm-verity output for an EROFS image.
+type VerityArtifact struct {
+	RootHash   string
+	HashTree   []byte
+	DataSize   uint64
+	HashOffset uint64
 }
 
 // DefaultVeritysetupOptions returns options matching containerd erofs-snapshotter defaults.
@@ -68,56 +77,72 @@ func NewVerityCalculator(tempDir string) *VerityCalculator {
 
 // CalculateRootHash computes the dm-verity root hash for an EROFS image.
 func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []byte, opts *VeritysetupOptions) (string, error) {
+	artifact, err := v.calculate(ctx, erofsData, opts, false)
+	if err != nil {
+		return "", err
+	}
+	return artifact.RootHash, nil
+}
+
+// CalculateArtifact computes the root hash and returns the exact dm-verity
+// superblock + Merkle-tree bytes for use as a separate hash device.
+func (v *VerityCalculator) CalculateArtifact(ctx context.Context, erofsData []byte, opts *VeritysetupOptions) (*VerityArtifact, error) {
+	return v.calculate(ctx, erofsData, opts, true)
+}
+
+func (v *VerityCalculator) calculate(ctx context.Context, erofsData []byte, opts *VeritysetupOptions, separateHashDevice bool) (*VerityArtifact, error) {
 	if len(erofsData) == 0 {
-		return "", fmt.Errorf("EROFS data is empty")
+		return nil, fmt.Errorf("EROFS data is empty")
 	}
 
 	if opts == nil {
 		defaultOpts := DefaultVeritysetupOptions()
 		opts = &defaultOpts
 	}
+	localOpts := *opts
+	opts = &localOpts
 
 	if _, err := exec.LookPath("veritysetup"); err != nil {
-		return "", fmt.Errorf("veritysetup not found in PATH: install 'cryptsetup' package (apt install cryptsetup / dnf install cryptsetup): %w", err)
+		return nil, fmt.Errorf("veritysetup not found in PATH: install 'cryptsetup' package (apt install cryptsetup / dnf install cryptsetup): %w", err)
 	}
 
 	dataSize := int64(len(erofsData))
 	erofsFile, err := os.CreateTemp(v.TempDir, "erofs-verity-*.img")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp EROFS file: %w", err)
+		return nil, fmt.Errorf("failed to create temp EROFS file: %w", err)
 	}
 	erofsPath := erofsFile.Name()
 	defer os.Remove(erofsPath)
 
 	if _, err := erofsFile.Write(erofsData); err != nil {
 		erofsFile.Close()
-		return "", fmt.Errorf("failed to write EROFS data: %w", err)
+		return nil, fmt.Errorf("failed to write EROFS data: %w", err)
 	}
 
 	erofsFile.Close()
 
-	if opts.HashOffset == 0 {
+	if !separateHashDevice && opts.HashOffset == 0 {
 		opts.HashOffset = uint64(dataSize)
 	}
 
 	var hashDevicePath string
-	if opts.HashOffset > 0 {
+	if !separateHashDevice {
 		hashSize := (dataSize / 100) + 8192
 		totalSize := dataSize + hashSize
 		f, err := os.OpenFile(erofsPath, os.O_WRONLY, 0)
 		if err != nil {
-			return "", fmt.Errorf("failed to open EROFS file for append: %w", err)
+			return nil, fmt.Errorf("failed to open EROFS file for append: %w", err)
 		}
 		if err := f.Truncate(totalSize); err != nil {
 			f.Close()
-			return "", fmt.Errorf("failed to extend file for hash tree: %w", err)
+			return nil, fmt.Errorf("failed to extend file for hash tree: %w", err)
 		}
 		f.Close()
 		hashDevicePath = erofsPath
 	} else {
 		hashFile, err := os.CreateTemp(v.TempDir, "erofs-verity-hash-*.img")
 		if err != nil {
-			return "", fmt.Errorf("failed to create temp hash file: %w", err)
+			return nil, fmt.Errorf("failed to create temp hash file: %w", err)
 		}
 		hashDevicePath = hashFile.Name()
 		hashFile.Close()
@@ -132,10 +157,21 @@ func (v *VerityCalculator) CalculateRootHash(ctx context.Context, erofsData []by
 
 	rootHash, err := v.runVeritysetupFormat(ctx, erofsPath, hashDevicePath, opts)
 	if err != nil {
-		return "", fmt.Errorf("veritysetup format failed: %w", err)
+		return nil, fmt.Errorf("veritysetup format failed: %w", err)
 	}
 
-	return rootHash, nil
+	artifact := &VerityArtifact{
+		RootHash:   rootHash,
+		DataSize:   uint64(dataSize),
+		HashOffset: opts.HashOffset,
+	}
+	if separateHashDevice {
+		artifact.HashTree, err = os.ReadFile(hashDevicePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read dm-verity hash tree: %w", err)
+		}
+	}
+	return artifact, nil
 }
 
 // runVeritysetupFormat executes the veritysetup format command and extracts the root hash from its output.
@@ -162,6 +198,9 @@ func (v *VerityCalculator) runVeritysetupFormat(ctx context.Context, dataDevice,
 	}
 	if opts.HashOffset > 0 {
 		args = append(args, fmt.Sprintf("--hash-offset=%d", opts.HashOffset))
+	}
+	if opts.UUID != "" {
+		args = append(args, fmt.Sprintf("--uuid=%s", opts.UUID))
 	}
 
 	args = append(args, dataDevice, hashDevice)
